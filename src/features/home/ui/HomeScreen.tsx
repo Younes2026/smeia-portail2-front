@@ -6,6 +6,8 @@ import { breakpoints } from '@/core/theme/breakpoints';
 import { colors } from '@/core/theme/colors';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
+import { useLogout } from '@/features/auth/hooks/useLogout';
+import { useAuthStore } from '@/store/auth.store';
 
 const quickLinks = [
   {
@@ -23,6 +25,8 @@ const quickLinks = [
 export function HomeScreen() {
   const { width } = useWindowDimensions();
   const isCompact = width < breakpoints.tablet;
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const logout = useLogout();
 
   return (
     <PageContainer>
@@ -33,6 +37,48 @@ export function HomeScreen() {
           Base frontend Expo, Directus et TanStack Query structuree pour les
           modules metier du portail.
         </Text>
+      </View>
+
+      <View style={[styles.authPanel, isCompact && styles.authPanelCompact]}>
+        <View style={styles.authCopy}>
+          <Text style={styles.authTitle}>Session</Text>
+          <Text style={styles.authStatus}>
+            {isAuthenticated ? 'Connecte' : 'Non connecte'}
+          </Text>
+        </View>
+
+        {isAuthenticated ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={logout.isPending}
+            onPress={() => {
+              logout.mutate();
+            }}
+            style={({ hovered, pressed }) => [
+              styles.authButton,
+              hovered && !logout.isPending && styles.authButtonHovered,
+              pressed && !logout.isPending && styles.authButtonPressed,
+              logout.isPending && styles.authButtonDisabled,
+            ]}
+          >
+            <Text style={styles.authButtonText}>
+              {logout.isPending ? 'Deconnexion...' : 'Deconnexion'}
+            </Text>
+          </Pressable>
+        ) : (
+          <Link href="./login" asChild>
+            <Pressable
+              accessibilityRole="link"
+              style={({ hovered, pressed }) => [
+                styles.authButton,
+                hovered && styles.authButtonHovered,
+                pressed && styles.authButtonPressed,
+              ]}
+            >
+              <Text style={styles.authButtonText}>Se connecter</Text>
+            </Pressable>
+          </Link>
+        )}
       </View>
 
       <View style={[styles.summaryGrid, isCompact && styles.summaryGridCompact]}>
@@ -101,6 +147,68 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.md,
     lineHeight: typography.lineHeight.md,
     color: colors.light.text.secondary,
+  },
+
+  authPanel: {
+    maxWidth: 720,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.light.border.default,
+    borderRadius: spacing.sm,
+    backgroundColor: colors.light.background.secondary,
+  },
+
+  authPanelCompact: {
+    alignItems: 'stretch',
+    flexDirection: 'column',
+  },
+
+  authCopy: {
+    gap: spacing.xs,
+  },
+
+  authTitle: {
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+    color: colors.light.text.primary,
+  },
+
+  authStatus: {
+    fontSize: typography.fontSize.sm,
+    color: colors.light.text.secondary,
+  },
+
+  authButton: {
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: spacing.sm,
+    backgroundColor: colors.light.brand.primary,
+  },
+
+  authButtonHovered: {
+    backgroundColor: colors.light.brand.secondary,
+  },
+
+  authButtonPressed: {
+    opacity: 0.84,
+  },
+
+  authButtonDisabled: {
+    opacity: 0.5,
+  },
+
+  authButtonText: {
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+    color: colors.light.text.inverse,
   },
 
   summaryGrid: {
