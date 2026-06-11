@@ -1,98 +1,112 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { StyleSheet, Text, View } from 'react-native';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
+import { EmptyState } from '@/components/feedback/EmptyState';
+import { ErrorState } from '@/components/feedback/ErrorState';
+import { LoadingState } from '@/components/feedback/LoadingState';
+import { PageContainer } from '@/components/layout/PageContainer';
+import { colors } from '@/core/theme/colors';
+import { spacing } from '@/core/theme/spacing';
+import { typography } from '@/core/theme/typography';
 
 export default function HomeScreen() {
   return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+    <PageContainer>
+      <View style={styles.header}>
+        <Text style={styles.eyebrow}>SMEIA-PORTAIL2</Text>
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+        <Text style={styles.title}>Portail Client</Text>
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+        <Text style={styles.subtitle}>
+          Frontend initialisé avec Expo, React Native for Web, TypeScript,
+          Expo Router, Zustand et TanStack Query.
+        </Text>
+      </View>
 
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Architecture frontend prête</Text>
+
+        <Text style={styles.cardText}>
+          La base du projet respecte la structure demandée : src/app, src/core,
+          src/features, src/components, src/store et src/utils.
+        </Text>
+
+        <Text style={styles.cardText}>
+          Prochaine étape : préparer le premier module métier avec les
+          réparations.
+        </Text>
+      </View>
+
+      <View style={styles.feedbackSection}>
+        <LoadingState message="Chargement de test..." />
+
+        <EmptyState
+          title="Aucune réparation trouvée"
+          message="Il n’y a aucune réparation à afficher pour le moment."
+        />
+
+        <ErrorState
+          title="Erreur de chargement"
+          message="Impossible de charger les réparations."
+          onRetry={() => {
+            console.log('Retry clicked');
+          }}
+        />
+      </View>
+    </PageContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
+  header: {
+    gap: spacing.sm,
+    marginBottom: spacing.lg,
   },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
+
+  eyebrow: {
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+    color: colors.light.text.secondary,
+    letterSpacing: 1,
   },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
-  },
+
   title: {
-    textAlign: 'center',
+    fontSize: typography.fontSize.xxl,
+    fontWeight: typography.fontWeight.bold,
+    color: colors.light.text.primary,
   },
-  code: {
-    textTransform: 'uppercase',
+
+  subtitle: {
+    maxWidth: 720,
+    fontSize: typography.fontSize.md,
+    lineHeight: typography.lineHeight.md,
+    color: colors.light.text.secondary,
   },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+
+  card: {
+    maxWidth: 820,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.light.border.default,
+    borderRadius: 16,
+    backgroundColor: colors.light.background.secondary,
+    gap: spacing.sm,
+  },
+
+  cardTitle: {
+    fontSize: typography.fontSize.lg,
+    fontWeight: typography.fontWeight.semiBold,
+    color: colors.light.text.primary,
+  },
+
+  cardText: {
+    fontSize: typography.fontSize.md,
+    lineHeight: typography.lineHeight.md,
+    color: colors.light.text.secondary,
+  },
+
+  feedbackSection: {
+    maxWidth: 820,
+    gap: spacing.md,
+    marginTop: spacing.lg,
   },
 });
