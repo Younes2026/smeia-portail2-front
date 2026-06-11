@@ -15,6 +15,8 @@ export type DirectusVehicle = {
   year?: number | null;
   mileage?: number | null;
   vin?: string | null;
+  customer_id?: DirectusRelation<DirectusCustomer>;
+  brand_id?: DirectusRelation<DirectusBrand>;
 };
 
 export type DirectusBrand = {

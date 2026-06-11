@@ -27,7 +27,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderStyle: 'dashed',
     borderColor: colors.light.border.strong,
-    borderRadius: 16,
+    borderRadius: spacing.sm,
     backgroundColor: colors.light.background.secondary,
     alignItems: 'center',
     gap: spacing.sm,

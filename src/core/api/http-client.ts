@@ -9,11 +9,11 @@ type RequestOptions = {
   headers?: HeadersInit;
 };
 
-type DirectusResponse<T> = {
+type DirectusSuccessResponse<T> = {
   data: T;
 };
 
-class HttpError extends Error {
+export class HttpError extends Error {
   status: number;
 
   constructor(message: string, status: number) {
@@ -23,39 +23,112 @@ class HttpError extends Error {
   }
 }
 
+function buildUrl(endpoint: string): string {
+  const normalizedEndpoint = endpoint.startsWith('/')
+    ? endpoint
+    : `/${endpoint}`;
+
+  return `${env.directusUrl}${normalizedEndpoint}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+async function parseJson(response: Response): Promise<unknown> {
+  const text = await response.text();
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function getDirectusErrorMessage(payload: unknown, status: number): string {
+  const fallback = `Erreur API Directus (${status})`;
+
+  if (!isRecord(payload)) {
+    return fallback;
+  }
+
+  const errors = payload.errors;
+
+  if (Array.isArray(errors)) {
+    const firstMessage = errors.find(
+      (error): error is { message: string } =>
+        isRecord(error) && typeof error.message === 'string'
+    )?.message;
+
+    return firstMessage ?? fallback;
+  }
+
+  return typeof payload.message === 'string' ? payload.message : fallback;
+}
+
+function createHeaders(body: unknown, headers?: HeadersInit): Headers {
+  const { accessToken } = useAuthStore.getState();
+  const requestHeaders = new Headers(headers);
+
+  if (!requestHeaders.has('Accept')) {
+    requestHeaders.set('Accept', 'application/json');
+  }
+
+  if (body !== undefined && !requestHeaders.has('Content-Type')) {
+    requestHeaders.set('Content-Type', 'application/json');
+  }
+
+  if (accessToken) {
+    requestHeaders.set('Authorization', `Bearer ${accessToken}`);
+  }
+
+  return requestHeaders;
+}
+
+function readDirectusData<T>(payload: unknown): T {
+  if (!isRecord(payload) || !('data' in payload)) {
+    throw new HttpError(
+      'Reponse Directus invalide : champ data manquant.',
+      500
+    );
+  }
+
+  return (payload as DirectusSuccessResponse<T>).data;
+}
+
 async function request<T>(
   endpoint: string,
   options: RequestOptions = {}
 ): Promise<T> {
-  const { accessToken } = useAuthStore.getState();
+  const body =
+    options.body !== undefined ? JSON.stringify(options.body) : undefined;
 
-  const headers: HeadersInit = {
-    Accept: 'application/json',
-    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-    ...options.headers,
-  };
-
-  const response = await fetch(`${env.directusUrl}${endpoint}`, {
+  const response = await fetch(buildUrl(endpoint), {
     method: options.method ?? 'GET',
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    headers: createHeaders(options.body, options.headers),
+    body,
   });
 
   if (!response.ok) {
+    const errorPayload = await parseJson(response);
+
     throw new HttpError(
-      `Erreur API Directus : ${response.status}`,
+      getDirectusErrorMessage(errorPayload, response.status),
       response.status
     );
   }
 
   if (response.status === 204) {
-    return null as T;
+    return undefined as T;
   }
 
-  const json = (await response.json()) as DirectusResponse<T>;
+  const payload = await parseJson(response);
 
-  return json.data;
+  return readDirectusData<T>(payload);
 }
 
 export const httpClient = {

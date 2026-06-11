@@ -48,6 +48,46 @@ function getRelationName<T extends { name: string }>(
   return relation.name || fallback;
 }
 
+function getVehicleFromRepair(
+  repair: DirectusRepair
+): DirectusVehicle | null {
+  const vehicle = repair.vehicle_id ?? null;
+
+  if (!isObjectRelation(vehicle)) {
+    return null;
+  }
+
+  return vehicle;
+}
+
+function getCustomerFromRepair(
+  repair: DirectusRepair
+): DirectusRelation<DirectusCustomer> {
+  const customer = repair.customer_id ?? null;
+
+  if (isObjectRelation(customer)) {
+    return customer;
+  }
+
+  const vehicle = getVehicleFromRepair(repair);
+
+  return vehicle?.customer_id ?? customer;
+}
+
+function getBrandFromRepair(
+  repair: DirectusRepair
+): DirectusRelation<DirectusBrand> {
+  const brand = repair.brand_id ?? null;
+
+  if (isObjectRelation(brand)) {
+    return brand;
+  }
+
+  const vehicle = getVehicleFromRepair(repair);
+
+  return vehicle?.brand_id ?? brand;
+}
+
 function formatMileage(value?: number | null): string {
   if (value === null || value === undefined) {
     return '-';
@@ -61,11 +101,11 @@ export function mapRepairToListItem(repair: DirectusRepair): RepairListItem {
     id: repair.id,
     documentNumber: repair.document_number ?? '-',
 
-    customerName: getCustomerName(repair.customer_id ?? null),
+    customerName: getCustomerName(getCustomerFromRepair(repair)),
     vehicleLabel: getVehicleLabel(repair.vehicle_id ?? null),
 
     brandName: getRelationName<DirectusBrand>(
-      repair.brand_id ?? null,
+      getBrandFromRepair(repair),
       'Marque non renseignée'
     ),
 

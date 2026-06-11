@@ -4,23 +4,31 @@ import type { DirectusRepair } from '@/features/repairs/model/repair.types';
 const REPAIRS_FIELDS = [
   '*',
   'vehicle_id.*',
-  'customer_id.*',
-  'brand_id.*',
+  'vehicle_id.customer_id.*',
+  'vehicle_id.brand_id.*',
   'status_id.*',
   'service_type_id.*',
   'workshop_id.*',
-].join(',');
+] as const;
+
+function buildRepairsEndpoint(path: string): string {
+  const searchParams = new URLSearchParams({
+    fields: REPAIRS_FIELDS.join(','),
+  });
+
+  return `${path}?${searchParams.toString()}`;
+}
 
 export const repairsApi = {
   getRepairs: () => {
     return httpClient.get<DirectusRepair[]>(
-      `/items/repairs?fields=${REPAIRS_FIELDS}`
+      buildRepairsEndpoint('/items/repairs')
     );
   },
 
   getRepairById: (id: number) => {
     return httpClient.get<DirectusRepair>(
-      `/items/repairs/${id}?fields=${REPAIRS_FIELDS}`
+      buildRepairsEndpoint(`/items/repairs/${id}`)
     );
   },
 };

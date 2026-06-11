@@ -22,6 +22,7 @@ export function ErrorState({
 
       {onRetry ? (
         <Pressable
+          accessibilityRole="button"
           onPress={onRetry}
           style={({ hovered, pressed }) => [
             styles.button,
@@ -42,7 +43,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderStyle: 'dashed',
     borderColor: colors.light.status.danger,
-    borderRadius: 16,
+    borderRadius: spacing.sm,
     backgroundColor: colors.light.background.secondary,
     alignItems: 'center',
     gap: spacing.sm,
@@ -61,7 +62,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
-    borderRadius: 10,
+    borderRadius: spacing.sm,
     backgroundColor: colors.light.brand.primary,
   },
   buttonHovered: {
