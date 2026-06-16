@@ -19,13 +19,29 @@ function getLoginErrorMessage(error: Error): string {
 }
 
 export function useLogin() {
-  const setSession = useAuthStore((state) => state.setSession);
-
   const mutation = useMutation<AuthSession, Error, LoginCredentials>({
-    mutationFn: ({ email, password }) =>
-      authApi.loginWithEmail(email.trim(), password),
-    onSuccess: (session) => {
-      setSession(session);
+    mutationFn: async ({ email, password }) => {
+      const loginSession = await authApi.loginWithEmail(email.trim(), password);
+
+      useAuthStore.getState().setSession(loginSession);
+
+      try {
+        const user = await authApi.getMe();
+        const customer = await authApi.getCurrentCustomer(user.id);
+        const session = {
+          ...loginSession,
+          user,
+          customer,
+        };
+
+        useAuthStore.getState().setSession(session);
+
+        return session;
+      } catch (error) {
+        useAuthStore.getState().clearSession();
+
+        throw error;
+      }
     },
   });
 

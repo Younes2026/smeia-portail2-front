@@ -11,18 +11,32 @@ const REPAIRS_FIELDS = [
   'workshop_id.*',
 ] as const;
 
-function buildRepairsEndpoint(path: string): string {
+type RepairsQueryOptions = {
+  customerId?: number;
+};
+
+function buildRepairsEndpoint(
+  path: string,
+  options: RepairsQueryOptions = {}
+): string {
   const searchParams = new URLSearchParams({
     fields: REPAIRS_FIELDS.join(','),
   });
+
+  if (options.customerId !== undefined) {
+    searchParams.set(
+      'filter[vehicle_id][customer_id][_eq]',
+      String(options.customerId)
+    );
+  }
 
   return `${path}?${searchParams.toString()}`;
 }
 
 export const repairsApi = {
-  getRepairs: () => {
+  getRepairs: (customerId: number) => {
     return httpClient.get<DirectusRepair[]>(
-      buildRepairsEndpoint('/items/repairs')
+      buildRepairsEndpoint('/items/repairs', { customerId })
     );
   },
 

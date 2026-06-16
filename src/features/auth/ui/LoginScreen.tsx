@@ -28,7 +28,7 @@ export function LoginScreen() {
   const canSubmit =
     email.trim().length > 0 && password.length > 0 && !login.isPending;
 
-  if (isAuthenticated) {
+  if (isAuthenticated && !login.isPending) {
     return <Redirect href="/repairs" />;
   }
 
