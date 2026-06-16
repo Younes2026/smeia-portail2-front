@@ -7,6 +7,7 @@ import { colors } from '@/core/theme/colors';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
 import { useLogout } from '@/features/auth/hooks/useLogout';
+import type { AuthCustomer, AuthUser } from '@/store/auth.store';
 import { useAuthStore } from '@/store/auth.store';
 
 const quickLinks = [
@@ -22,10 +23,25 @@ const quickLinks = [
   },
 ] as const;
 
+function getDisplayName(
+  customer: AuthCustomer | null,
+  user: AuthUser | null
+): string {
+  const customerName = `${customer?.firstName ?? ''} ${
+    customer?.lastName ?? ''
+  }`.trim();
+  const userName = `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim();
+
+  return customerName || userName || user?.email || 'Client connecte';
+}
+
 export function HomeScreen() {
   const { width } = useWindowDimensions();
   const isCompact = width < breakpoints.tablet;
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const user = useAuthStore((state) => state.user);
+  const customer = useAuthStore((state) => state.customer);
+  const displayName = getDisplayName(customer, user);
   const logout = useLogout();
 
   return (
@@ -39,43 +55,61 @@ export function HomeScreen() {
         </Text>
       </View>
 
-      <View style={[styles.authPanel, isCompact && styles.authPanelCompact]}>
+      <View
+        style={[
+          styles.authPanel,
+          !isAuthenticated && styles.authPanelPublic,
+          isCompact && styles.authPanelCompact,
+        ]}
+      >
         <View style={styles.authCopy}>
-          <Text style={styles.authTitle}>Session</Text>
+          <Text style={styles.authTitle}>
+            {isAuthenticated ? 'Espace client' : 'Connexion client'}
+          </Text>
           <Text style={styles.authStatus}>
-            {isAuthenticated ? 'Connecte' : 'Non connecte'}
+            {isAuthenticated
+              ? `Connecte : ${displayName}`
+              : 'Connectez-vous pour consulter vos reparations.'}
           </Text>
         </View>
 
         {isAuthenticated ? (
-          <Pressable
-            accessibilityRole="button"
-            disabled={logout.isPending}
-            onPress={() => {
-              logout.mutate();
-            }}
-            style={({ hovered, pressed }) => [
-              styles.authButton,
-              hovered && !logout.isPending && styles.authButtonHovered,
-              pressed && !logout.isPending && styles.authButtonPressed,
-              logout.isPending && styles.authButtonDisabled,
-            ]}
-          >
-            <Text style={styles.authButtonText}>
-              {logout.isPending ? 'Deconnexion...' : 'Deconnexion'}
-            </Text>
-          </Pressable>
-        ) : (
-          <Link href="./login" asChild>
+          <View style={[styles.authActions, isCompact && styles.authActionsCompact]}>
+            <Link href="/repairs" asChild>
+              <Pressable
+                accessibilityRole="link"
+                style={({ hovered, pressed }) => [
+                  styles.authButton,
+                  hovered && styles.authButtonHovered,
+                  pressed && styles.authButtonPressed,
+                ]}
+              >
+                <Text style={styles.authButtonText}>Voir mes reparations</Text>
+              </Pressable>
+            </Link>
+
             <Pressable
-              accessibilityRole="link"
+              accessibilityRole="button"
+              disabled={logout.isPending}
+              onPress={() => {
+                logout.mutate();
+              }}
               style={({ hovered, pressed }) => [
-                styles.authButton,
-                hovered && styles.authButtonHovered,
-                pressed && styles.authButtonPressed,
+                styles.secondaryButton,
+                hovered && !logout.isPending && styles.secondaryButtonHovered,
+                pressed && !logout.isPending && styles.authButtonPressed,
+                logout.isPending && styles.authButtonDisabled,
               ]}
             >
-              <Text style={styles.authButtonText}>Se connecter</Text>
+              <Text style={styles.secondaryButtonText}>
+                {logout.isPending ? 'Deconnexion...' : 'Deconnexion'}
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Link href="/login" asChild>
+            <Pressable style={styles.loginButton}>
+              <Text style={styles.loginButtonText}>Se connecter</Text>
             </Pressable>
           </Link>
         )}
@@ -163,6 +197,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.light.background.secondary,
   },
 
+  authPanelPublic: {
+    borderWidth: 2,
+    borderColor: colors.light.status.info,
+    backgroundColor: '#EFF6FF',
+  },
+
   authPanelCompact: {
     alignItems: 'stretch',
     flexDirection: 'column',
@@ -183,6 +223,17 @@ const styles = StyleSheet.create({
     color: colors.light.text.secondary,
   },
 
+  authActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+
+  authActionsCompact: {
+    alignItems: 'stretch',
+    flexDirection: 'column',
+  },
+
   authButton: {
     minHeight: 40,
     alignItems: 'center',
@@ -191,6 +242,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     borderRadius: spacing.sm,
     backgroundColor: colors.light.brand.primary,
+  },
+
+  loginButton: {
+    backgroundColor: '#2563eb',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+    minWidth: 150,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   authButtonHovered: {
@@ -209,6 +270,35 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
     color: colors.light.text.inverse,
+  },
+
+  loginButtonText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+
+  secondaryButton: {
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.light.border.strong,
+    borderRadius: spacing.sm,
+    backgroundColor: colors.light.background.primary,
+  },
+
+  secondaryButtonHovered: {
+    borderColor: colors.light.brand.secondary,
+    backgroundColor: colors.light.background.muted,
+  },
+
+  secondaryButtonText: {
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+    color: colors.light.text.primary,
   },
 
   summaryGrid: {
