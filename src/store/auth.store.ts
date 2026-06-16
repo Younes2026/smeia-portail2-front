@@ -10,11 +10,21 @@ export type AuthUser = {
   lastName?: string | null;
 };
 
+export type AuthCustomer = {
+  id: number;
+  firstName?: string | null;
+  lastName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+};
+
 export type AuthSession = {
   accessToken: string;
   refreshToken: string | null;
   expires: number | null;
   user?: AuthUser | null;
+  customer?: AuthCustomer | null;
 };
 
 type AuthState = {
@@ -22,6 +32,7 @@ type AuthState = {
   refreshToken: string | null;
   expires: number | null;
   user: AuthUser | null;
+  customer: AuthCustomer | null;
   isAuthenticated: boolean;
 
   setSession: (session: AuthSession) => void;
@@ -33,10 +44,16 @@ const emptySession = {
   refreshToken: null,
   expires: null,
   user: null,
+  customer: null,
   isAuthenticated: false,
 } satisfies Pick<
   AuthState,
-  'accessToken' | 'refreshToken' | 'expires' | 'user' | 'isAuthenticated'
+  | 'accessToken'
+  | 'refreshToken'
+  | 'expires'
+  | 'user'
+  | 'customer'
+  | 'isAuthenticated'
 >;
 
 export const useAuthStore = create<AuthState>()(
@@ -44,12 +61,19 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       ...emptySession,
 
-      setSession: ({ accessToken, refreshToken, expires, user = null }) => {
+      setSession: ({
+        accessToken,
+        refreshToken,
+        expires,
+        user = null,
+        customer = null,
+      }) => {
         set({
           accessToken,
           refreshToken,
           expires,
           user,
+          customer,
           isAuthenticated: Boolean(accessToken),
         });
       },
@@ -66,6 +90,7 @@ export const useAuthStore = create<AuthState>()(
         refreshToken: state.refreshToken,
         expires: state.expires,
         user: state.user,
+        customer: state.customer,
         isAuthenticated: state.isAuthenticated,
       }),
     }
