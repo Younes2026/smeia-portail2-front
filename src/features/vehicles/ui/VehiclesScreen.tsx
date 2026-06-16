@@ -274,30 +274,42 @@ type VehicleCardProps = {
 
 function VehicleCard({ vehicle }: VehicleCardProps) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      style={({ hovered, pressed }) => [
-        styles.vehicleCard,
-        hovered && styles.cardHovered,
-        pressed && styles.pressed,
-      ]}
+    <Link
+      href={{
+        pathname: '/vehicles/[id]',
+        params: {
+          id: String(vehicle.id),
+        },
+      }}
+      asChild
     >
-      <View style={styles.vehicleCardHeader}>
-        <View>
-          <Text style={styles.vehicleBrand}>{vehicle.brandName}</Text>
-          <Text style={styles.vehicleModel}>{vehicle.model}</Text>
+      <Pressable
+        accessibilityRole="link"
+        style={({ hovered, pressed }) => [
+          styles.vehicleCard,
+          hovered && styles.cardHovered,
+          pressed && styles.pressed,
+        ]}
+      >
+        <View style={styles.vehicleCardHeader}>
+          <View>
+            <Text style={styles.vehicleBrand}>{vehicle.brandName}</Text>
+            <Text style={styles.vehicleModel}>{vehicle.model}</Text>
+          </View>
+          <View style={styles.registrationBadge}>
+            <Text style={styles.registrationText}>
+              {vehicle.registrationNumber}
+            </Text>
+          </View>
         </View>
-        <View style={styles.registrationBadge}>
-          <Text style={styles.registrationText}>{vehicle.registrationNumber}</Text>
-        </View>
-      </View>
 
-      <View style={styles.vehicleDetails}>
-        <VehicleDetail label="Année" value={vehicle.year} />
-        <VehicleDetail label="Kilométrage" value={vehicle.mileage} />
-        <VehicleDetail label="VIN" value={vehicle.vin} />
-      </View>
-    </Pressable>
+        <View style={styles.vehicleDetails}>
+          <VehicleDetail label="Année" value={vehicle.year} />
+          <VehicleDetail label="Kilométrage" value={vehicle.mileage} />
+          <VehicleDetail label="VIN" value={vehicle.vin} />
+        </View>
+      </Pressable>
+    </Link>
   );
 }
 

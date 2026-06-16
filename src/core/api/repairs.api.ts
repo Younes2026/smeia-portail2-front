@@ -13,6 +13,7 @@ const REPAIRS_FIELDS = [
 
 type RepairsQueryOptions = {
   customerId?: number;
+  vehicleId?: number;
 };
 
 function buildRepairsEndpoint(
@@ -30,6 +31,10 @@ function buildRepairsEndpoint(
     );
   }
 
+  if (options.vehicleId !== undefined) {
+    searchParams.set('filter[vehicle_id][_eq]', String(options.vehicleId));
+  }
+
   return `${path}?${searchParams.toString()}`;
 }
 
@@ -43,6 +48,12 @@ export const repairsApi = {
   getRepairById: (id: number) => {
     return httpClient.get<DirectusRepair>(
       buildRepairsEndpoint(`/items/repairs/${id}`)
+    );
+  },
+
+  getRepairsByVehicleId: (vehicleId: number) => {
+    return httpClient.get<DirectusRepair[]>(
+      buildRepairsEndpoint('/items/repairs', { vehicleId })
     );
   },
 };

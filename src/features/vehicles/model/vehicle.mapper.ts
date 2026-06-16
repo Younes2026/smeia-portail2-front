@@ -3,7 +3,16 @@ import type {
   DirectusVehicle,
   DirectusVehicleBrand,
   VehicleListItem,
+  VehicleRepairListItem,
 } from '@/features/vehicles/model/vehicle.types';
+import type { DirectusRepair } from '@/features/repairs/model/repair.types';
+
+type DirectusVehicleRepair = DirectusRepair & {
+  date_created?: string | null;
+  entry_date?: string | null;
+  final_cost?: number | string | null;
+  total_cost?: number | string | null;
+};
 
 function isObjectRelation<T>(relation: DirectusRelation<T>): relation is T {
   return typeof relation === 'object' && relation !== null;
@@ -35,6 +44,50 @@ function formatYear(value?: number | null): string {
   return String(value);
 }
 
+function getRelationName<T extends { name: string }>(
+  relation: DirectusRelation<T>,
+  fallback: string
+): string {
+  if (!isObjectRelation(relation)) {
+    return fallback;
+  }
+
+  return relation.name || fallback;
+}
+
+function formatDate(value?: string | null): string {
+  if (!value) {
+    return 'Date non renseignée';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleDateString('fr-FR');
+}
+
+function formatCost(value?: number | string | null): string {
+  if (value === null || value === undefined || value === '') {
+    return 'Non communiqué';
+  }
+
+  const numericValue =
+    typeof value === 'string' ? Number.parseFloat(value) : value;
+
+  if (Number.isNaN(numericValue)) {
+    return String(value);
+  }
+
+  return new Intl.NumberFormat('fr-FR', {
+    style: 'currency',
+    currency: 'MAD',
+    maximumFractionDigits: 2,
+  }).format(numericValue);
+}
+
 export function mapVehicleToListItem(
   vehicle: DirectusVehicle
 ): VehicleListItem {
@@ -54,4 +107,35 @@ export function mapVehiclesToListItems(
   vehicles: DirectusVehicle[]
 ): VehicleListItem[] {
   return vehicles.map(mapVehicleToListItem);
+}
+
+export function mapVehicleRepairToListItem(
+  repair: DirectusVehicleRepair
+): VehicleRepairListItem {
+  return {
+    id: repair.id,
+    documentNumber: repair.document_number ?? `Dossier #${repair.id}`,
+    statusName: getRelationName(
+      repair.status_id ?? null,
+      'Statut non renseigné'
+    ),
+    serviceTypeName: getRelationName(
+      repair.service_type_id ?? null,
+      'Service non renseigné'
+    ),
+    workshopName: getRelationName(
+      repair.workshop_id ?? null,
+      'Atelier non renseigné'
+    ),
+    entryDate: formatDate(
+      repair.entry_date ?? repair.start_date ?? repair.date_created
+    ),
+    finalCost: formatCost(repair.final_cost ?? repair.total_cost),
+  };
+}
+
+export function mapVehicleRepairsToListItems(
+  repairs: DirectusVehicleRepair[]
+): VehicleRepairListItem[] {
+  return repairs.map(mapVehicleRepairToListItem);
 }

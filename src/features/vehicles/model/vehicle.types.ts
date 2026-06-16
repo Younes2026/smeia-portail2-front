@@ -29,3 +29,13 @@ export type VehicleListItem = {
   mileage: string;
   vin: string;
 };
+
+export type VehicleRepairListItem = {
+  id: number;
+  documentNumber: string;
+  statusName: string;
+  serviceTypeName: string;
+  workshopName: string;
+  entryDate: string;
+  finalCost: string;
+};
