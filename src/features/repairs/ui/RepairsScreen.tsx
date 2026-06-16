@@ -1,3 +1,4 @@
+import { Link } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
   Pressable,
@@ -20,12 +21,30 @@ import type { RepairListItem } from '@/features/repairs/model/repair.types';
 import { useAuthStore } from '@/store/auth.store';
 
 const navigationItems = [
-  'Tableau de bord',
-  'Mes réparations',
-  'Prendre rendez-vous',
-  'Mes véhicules',
-  'Historique',
-  'Profil',
+  {
+    href: '/repairs',
+    label: 'Tableau de bord',
+  },
+  {
+    href: '/repairs',
+    label: 'Mes réparations',
+  },
+  {
+    href: '/repairs',
+    label: 'Prendre rendez-vous',
+  },
+  {
+    href: '/vehicles',
+    label: 'Mes véhicules',
+  },
+  {
+    href: '/repairs',
+    label: 'Historique',
+  },
+  {
+    href: '/repairs',
+    label: 'Profil',
+  },
 ] as const;
 
 const bookingSteps = [
@@ -408,25 +427,26 @@ function Sidebar({
 
       <View style={[styles.navList, compact && styles.navListCompact]}>
         {navigationItems.map((item, index) => (
-          <Pressable
-            key={item}
-            accessibilityRole="button"
-            style={({ hovered, pressed }) => [
-              styles.navItem,
-              index === 0 && styles.navItemActive,
-              hovered && styles.navItemHovered,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text
-              style={[
-                styles.navItemText,
-                index === 0 && styles.navItemTextActive,
+          <Link key={item.label} href={item.href} asChild>
+            <Pressable
+              accessibilityRole="link"
+              style={({ hovered, pressed }) => [
+                styles.navItem,
+                index === 0 && styles.navItemActive,
+                hovered && styles.navItemHovered,
+                pressed && styles.pressed,
               ]}
             >
-              {item}
-            </Text>
-          </Pressable>
+              <Text
+                style={[
+                  styles.navItemText,
+                  index === 0 && styles.navItemTextActive,
+                ]}
+              >
+                {item.label}
+              </Text>
+            </Pressable>
+          </Link>
         ))}
       </View>
 
