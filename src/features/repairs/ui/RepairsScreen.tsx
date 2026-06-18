@@ -30,7 +30,7 @@ const navigationItems = [
     label: 'Mes réparations',
   },
   {
-    href: '/repairs',
+    href: '/appointments',
     label: 'Prendre rendez-vous',
   },
   {
@@ -217,19 +217,18 @@ export function RepairsScreen() {
                 </Text>
               </View>
 
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => {
-                  setActiveBookingStep(0);
-                }}
-                style={({ hovered, pressed }) => [
-                  styles.primaryAction,
-                  hovered && styles.primaryActionHovered,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={styles.primaryActionText}>Prendre rendez-vous</Text>
-              </Pressable>
+              <Link href="/appointments" asChild>
+                <Pressable
+                  accessibilityRole="link"
+                  style={({ hovered, pressed }) => [
+                    styles.primaryAction,
+                    hovered && styles.primaryActionHovered,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.primaryActionText}>Prendre rendez-vous</Text>
+                </Pressable>
+              </Link>
             </View>
 
             <View style={[styles.summaryGrid, isNarrow && styles.stack]}>

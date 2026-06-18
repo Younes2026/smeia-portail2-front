@@ -29,7 +29,7 @@ const navigationItems = [
     label: 'Mes réparations',
   },
   {
-    href: '/repairs',
+    href: '/appointments',
     label: 'Prendre rendez-vous',
   },
   {
