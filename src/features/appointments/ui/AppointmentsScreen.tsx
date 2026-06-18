@@ -65,7 +65,7 @@ const navigationItems = [
     label: 'Mes véhicules',
   },
   {
-    href: '/repairs',
+    href: '/history',
     label: 'Historique',
   },
   {
@@ -511,7 +511,7 @@ export function AppointmentsScreen() {
 }
 
 type SidebarProps = {
-  activeHref: '/appointments' | '/repairs' | '/vehicles';
+  activeHref: '/appointments' | '/history' | '/repairs' | '/vehicles';
   clientName: string;
   compact: boolean;
   logoutDisabled: boolean;

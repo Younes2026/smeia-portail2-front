@@ -38,7 +38,7 @@ const navigationItems = [
     label: 'Mes véhicules',
   },
   {
-    href: '/repairs',
+    href: '/history',
     label: 'Historique',
   },
   {

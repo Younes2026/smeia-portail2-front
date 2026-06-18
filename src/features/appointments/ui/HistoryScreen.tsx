@@ -1,5 +1,7 @@
 import { Link } from 'expo-router';
+import { useEffect, useState } from 'react';
 import {
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,9 +16,12 @@ import { PageContainer } from '@/components/layout/PageContainer';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
+import {
+  useAppointmentsHistory,
+  useCancelAppointment,
+} from '@/features/appointments/hooks/useAppointmentsHistory';
+import type { AppointmentListItem } from '@/features/appointments/model/appointment.types';
 import { useLogout } from '@/features/auth/hooks/useLogout';
-import { useVehicles } from '@/features/vehicles/hooks/useVehicles';
-import type { VehicleListItem } from '@/features/vehicles/model/vehicle.types';
 import { useAuthStore } from '@/store/auth.store';
 
 const navigationItems = [
@@ -66,12 +71,38 @@ function getInitials(name: string): string {
     .toUpperCase();
 }
 
-export function VehiclesScreen() {
+function normalizeStatus(status: string): string {
+  return status.trim().toLowerCase();
+}
+
+function getStatusLabel(status: string): string {
+  const normalizedStatus = normalizeStatus(status);
+
+  if (normalizedStatus === 'pending') {
+    return 'En attente';
+  }
+
+  if (normalizedStatus === 'cancelled') {
+    return 'Annulé';
+  }
+
+  if (normalizedStatus === 'confirmed') {
+    return 'Confirmé';
+  }
+
+  return status;
+}
+
+export function HistoryScreen() {
   const { width } = useWindowDimensions();
   const isCompact = width < breakpoints.desktop;
   const isNarrow = width < breakpoints.tablet;
-  const { data, isLoading, isError, refetch } = useVehicles();
-  const vehicles = data ?? [];
+  const appointmentsQuery = useAppointmentsHistory();
+  const cancelAppointment = useCancelAppointment();
+  const [appointmentToCancel, setAppointmentToCancel] = useState<
+    number | string | null
+  >(null);
+  const appointments = appointmentsQuery.data ?? [];
   const user = useAuthStore((state) => state.user);
   const customer = useAuthStore((state) => state.customer);
   const logout = useLogout();
@@ -80,23 +111,32 @@ export function VehiclesScreen() {
     customer?.lastName ?? user?.lastName,
     customer?.email ?? user?.email
   );
+  const pendingCount = appointments.filter(
+    (appointment) => normalizeStatus(appointment.status) === 'pending'
+  ).length;
 
-  if (isLoading) {
+  useEffect(() => {
+    if (cancelAppointment.isSuccess) {
+      setAppointmentToCancel(null);
+    }
+  }, [cancelAppointment.isSuccess]);
+
+  if (appointmentsQuery.isLoading) {
     return (
       <PageContainer>
-        <LoadingState message="Chargement de vos véhicules..." />
+        <LoadingState message="Chargement de vos rendez-vous..." />
       </PageContainer>
     );
   }
 
-  if (isError) {
+  if (appointmentsQuery.isError) {
     return (
       <PageContainer>
         <ErrorState
           title="Erreur de chargement"
-          message="Impossible de charger vos véhicules depuis Directus."
+          message="Impossible de charger l'historique de vos rendez-vous."
           onRetry={() => {
-            refetch();
+            appointmentsQuery.refetch();
           }}
         />
       </PageContainer>
@@ -136,7 +176,7 @@ export function VehiclesScreen() {
 
             <View style={[styles.navList, isCompact && styles.navListCompact]}>
               {navigationItems.map((item) => {
-                const isActive = item.href === '/vehicles';
+                const isActive = item.href === '/history';
 
                 return (
                   <Link key={item.label} href={item.href} asChild>
@@ -189,15 +229,15 @@ export function VehiclesScreen() {
           >
             <View style={[styles.header, isNarrow && styles.headerNarrow]}>
               <View style={styles.headerCopy}>
-                <Text style={styles.eyebrow}>Mes véhicules</Text>
-                <Text style={styles.title}>Garage client SMEIA</Text>
+                <Text style={styles.eyebrow}>Historique</Text>
+                <Text style={styles.title}>Mes rendez-vous</Text>
                 <Text style={styles.subtitle}>
-                  Retrouvez les véhicules associés à votre compte client,
-                  filtrés par votre identité Directus.
+                  Consultez vos demandes de rendez-vous et annulez celles qui
+                  sont encore en attente.
                 </Text>
               </View>
 
-              <Link href="/repairs" asChild>
+              <Link href="/appointments" asChild>
                 <Pressable
                   accessibilityRole="link"
                   style={({ hovered, pressed }) => [
@@ -206,59 +246,163 @@ export function VehiclesScreen() {
                     pressed && styles.pressed,
                   ]}
                 >
-                  <Text style={styles.primaryActionText}>Retour tableau de bord</Text>
+                  <Text style={styles.primaryActionText}>
+                    Nouveau rendez-vous
+                  </Text>
                 </Pressable>
               </Link>
             </View>
 
             <View style={[styles.summaryGrid, isNarrow && styles.stack]}>
               <SummaryCard
-                label="Véhicules enregistrés"
-                value={String(vehicles.length)}
-                detail="Liés à votre fiche client"
+                detail="Demandes liées à votre compte"
+                label="Rendez-vous"
+                value={String(appointments.length)}
               />
               <SummaryCard
-                label="Client"
-                value={clientName}
-                detail={customer?.email ?? user?.email ?? 'Compte SMEIA'}
+                detail="Annulation encore possible"
+                label="En attente"
+                value={String(pendingCount)}
               />
               <SummaryCard
-                label="Accès"
+                detail="Historique conservé dans Directus"
+                label="Suivi"
                 value="Sécurisé"
-                detail="Filtrage par customer_id"
               />
             </View>
 
-            {vehicles.length > 0 ? (
-              <View style={styles.vehicleGrid}>
-                {vehicles.map((vehicle) => (
-                  <VehicleCard key={vehicle.id} vehicle={vehicle} />
+            {cancelAppointment.isSuccess ? (
+              <View style={styles.successBox}>
+                <Text style={styles.successTitle}>Rendez-vous annulé</Text>
+                <Text style={styles.successText}>
+                  Le statut a été mis à jour et l'historique a été actualisé.
+                </Text>
+              </View>
+            ) : null}
+
+            {cancelAppointment.isError ? (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorTitle}>Annulation impossible</Text>
+                <Text style={styles.errorText}>
+                  La mise à jour du rendez-vous a échoué. Veuillez réessayer.
+                </Text>
+              </View>
+            ) : null}
+
+            {appointments.length > 0 ? (
+              <View style={styles.appointmentGrid}>
+                {appointments.map((appointment) => (
+                  <AppointmentCard
+                    key={String(appointment.id)}
+                    appointment={appointment}
+                    isCancelling={
+                      cancelAppointment.isPending &&
+                      String(cancelAppointment.variables) ===
+                        String(appointment.id)
+                    }
+                    onCancel={() => {
+                      cancelAppointment.reset();
+                      setAppointmentToCancel(appointment.id);
+                    }}
+                  />
                 ))}
               </View>
             ) : (
               <View style={styles.emptyPanel}>
-                <Text style={styles.emptyTitle}>Aucun véhicule trouvé</Text>
+                <Text style={styles.emptyTitle}>Aucun rendez-vous</Text>
                 <Text style={styles.emptyText}>
-                  Aucun véhicule n'est actuellement lié à votre compte client.
-                  Si vous pensez qu'il s'agit d'une erreur, contactez votre
-                  conseiller SMEIA.
+                  Vous n'avez pas encore créé de demande de rendez-vous.
                 </Text>
               </View>
             )}
           </ScrollView>
         </View>
+
+        <Modal
+          animationType="fade"
+          onRequestClose={() => {
+            if (!cancelAppointment.isPending) {
+              setAppointmentToCancel(null);
+            }
+          }}
+          transparent
+          visible={appointmentToCancel !== null}
+        >
+          <View style={styles.modalOverlay}>
+            <View
+              accessibilityRole="alert"
+              style={styles.confirmationModal}
+            >
+              <Text style={styles.modalEyebrow}>Rendez-vous SMEIA</Text>
+              <Text style={styles.modalTitle}>Confirmer l’annulation</Text>
+              <Text style={styles.modalMessage}>
+                Voulez-vous vraiment annuler ce rendez-vous ? Cette action
+                conservera l’historique dans Directus.
+              </Text>
+
+              <View style={[styles.modalActions, isNarrow && styles.stack]}>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={cancelAppointment.isPending}
+                  onPress={() => {
+                    setAppointmentToCancel(null);
+                  }}
+                  style={({ hovered, pressed }) => [
+                    styles.keepButton,
+                    hovered &&
+                      !cancelAppointment.isPending &&
+                      styles.keepButtonHovered,
+                    pressed && !cancelAppointment.isPending && styles.pressed,
+                    cancelAppointment.isPending && styles.disabled,
+                  ]}
+                >
+                  <Text style={styles.keepButtonText}>
+                    Garder le rendez-vous
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={
+                    appointmentToCancel === null ||
+                    cancelAppointment.isPending
+                  }
+                  onPress={() => {
+                    if (appointmentToCancel !== null) {
+                      cancelAppointment.mutate(appointmentToCancel);
+                    }
+                  }}
+                  style={({ hovered, pressed }) => [
+                    styles.confirmCancelButton,
+                    hovered &&
+                      !cancelAppointment.isPending &&
+                      styles.confirmCancelButtonHovered,
+                    pressed && !cancelAppointment.isPending && styles.pressed,
+                    cancelAppointment.isPending && styles.disabled,
+                  ]}
+                >
+                  <Text style={styles.confirmCancelButtonText}>
+                    {cancelAppointment.isPending
+                      ? 'Annulation...'
+                      : 'Oui, annuler'}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     </PageContainer>
   );
 }
 
 type SummaryCardProps = {
+  detail: string;
   label: string;
   value: string;
-  detail: string;
 };
 
-function SummaryCard({ label, value, detail }: SummaryCardProps) {
+function SummaryCard({ detail, label, value }: SummaryCardProps) {
   return (
     <View style={styles.summaryCard}>
       <Text style={styles.summaryLabel}>{label}</Text>
@@ -268,61 +412,87 @@ function SummaryCard({ label, value, detail }: SummaryCardProps) {
   );
 }
 
-type VehicleCardProps = {
-  vehicle: VehicleListItem;
+type AppointmentCardProps = {
+  appointment: AppointmentListItem;
+  isCancelling: boolean;
+  onCancel: () => void;
 };
 
-function VehicleCard({ vehicle }: VehicleCardProps) {
-  return (
-    <Link
-      href={{
-        pathname: '/vehicles/[id]',
-        params: {
-          id: String(vehicle.id),
-        },
-      }}
-      asChild
-    >
-      <Pressable
-        accessibilityRole="link"
-        style={({ hovered, pressed }) => [
-          styles.vehicleCard,
-          hovered && styles.cardHovered,
-          pressed && styles.pressed,
-        ]}
-      >
-        <View style={styles.vehicleCardHeader}>
-          <View>
-            <Text style={styles.vehicleBrand}>{vehicle.brandName}</Text>
-            <Text style={styles.vehicleModel}>{vehicle.model}</Text>
-          </View>
-          <View style={styles.registrationBadge}>
-            <Text style={styles.registrationText}>
-              {vehicle.registrationNumber}
-            </Text>
-          </View>
-        </View>
+function AppointmentCard({
+  appointment,
+  isCancelling,
+  onCancel,
+}: AppointmentCardProps) {
+  const isPending = normalizeStatus(appointment.status) === 'pending';
+  const isCancelled = normalizeStatus(appointment.status) === 'cancelled';
 
-        <View style={styles.vehicleDetails}>
-          <VehicleDetail label="Année" value={vehicle.year} />
-          <VehicleDetail label="Kilométrage" value={vehicle.mileage} />
-          <VehicleDetail label="VIN" value={vehicle.vin} />
+  return (
+    <View style={styles.appointmentCard}>
+      <View style={styles.cardHeader}>
+        <View style={styles.cardHeaderCopy}>
+          <Text style={styles.vehicleName}>{appointment.vehicle}</Text>
+          <Text style={styles.registrationNumber}>
+            {appointment.registrationNumber}
+          </Text>
         </View>
-      </Pressable>
-    </Link>
+        <View
+          style={[
+            styles.statusBadge,
+            isPending && styles.statusPending,
+            isCancelled && styles.statusCancelled,
+          ]}
+        >
+          <Text
+            style={[
+              styles.statusText,
+              isPending && styles.statusTextPending,
+              isCancelled && styles.statusTextCancelled,
+            ]}
+          >
+            {getStatusLabel(appointment.status)}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.detailGrid}>
+        <DetailLine label="Service" value={appointment.serviceType} />
+        <DetailLine label="Atelier" value={appointment.workshop} />
+        <DetailLine label="Date" value={appointment.requestedDate} />
+        <DetailLine label="Heure" value={appointment.requestedTime} />
+        <DetailLine label="Commentaire" value={appointment.comment} />
+      </View>
+
+      {isPending ? (
+        <Pressable
+          accessibilityRole="button"
+          disabled={isCancelling}
+          onPress={onCancel}
+          style={({ hovered, pressed }) => [
+            styles.cancelButton,
+            hovered && !isCancelling && styles.cancelButtonHovered,
+            pressed && !isCancelling && styles.pressed,
+            isCancelling && styles.disabled,
+          ]}
+        >
+          <Text style={styles.cancelButtonText}>
+            {isCancelling ? 'Annulation...' : 'Annuler le rendez-vous'}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 
-type VehicleDetailProps = {
+type DetailLineProps = {
   label: string;
   value: string;
 };
 
-function VehicleDetail({ label, value }: VehicleDetailProps) {
+function DetailLine({ label, value }: DetailLineProps) {
   return (
-    <View style={styles.vehicleDetail}>
-      <Text style={styles.vehicleDetailLabel}>{label}</Text>
-      <Text style={styles.vehicleDetailValue}>{value}</Text>
+    <View style={styles.detailLine}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={styles.detailValue}>{value}</Text>
     </View>
   );
 }
@@ -521,10 +691,6 @@ const styles = StyleSheet.create({
     fontWeight: typography.fontWeight.semiBold,
   },
 
-  disabled: {
-    opacity: 0.5,
-  },
-
   contentScroll: {
     flex: 1,
   },
@@ -584,13 +750,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     borderRadius: 14,
     backgroundColor: '#0F4C9A',
-    shadowColor: '#0F4C9A',
-    shadowOffset: {
-      width: 0,
-      height: 10,
-    },
-    shadowOpacity: 0.18,
-    shadowRadius: 18,
   },
 
   primaryActionHovered: {
@@ -605,6 +764,10 @@ const styles = StyleSheet.create({
 
   pressed: {
     opacity: 0.86,
+  },
+
+  disabled: {
+    opacity: 0.5,
   },
 
   summaryGrid: {
@@ -625,13 +788,6 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     backgroundColor: '#FFFFFF',
     gap: spacing.sm,
-    shadowColor: '#071832',
-    shadowOffset: {
-      width: 0,
-      height: 12,
-    },
-    shadowOpacity: 0.06,
-    shadowRadius: 24,
   },
 
   summaryLabel: {
@@ -652,17 +808,17 @@ const styles = StyleSheet.create({
     lineHeight: typography.lineHeight.sm,
   },
 
-  vehicleGrid: {
+  appointmentGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.md,
   },
 
-  vehicleCard: {
-    width: '100%',
-    minWidth: 280,
-    maxWidth: 420,
+  appointmentCard: {
     flexGrow: 1,
+    flexBasis: 360,
+    minWidth: 300,
+    maxWidth: 560,
     padding: spacing.lg,
     borderWidth: 1,
     borderColor: 'rgba(130, 145, 166, 0.24)',
@@ -678,50 +834,67 @@ const styles = StyleSheet.create({
     shadowRadius: 26,
   },
 
-  cardHovered: {
-    borderColor: '#B8C9DF',
-    transform: [{ translateY: -1 }],
-  },
-
-  vehicleCardHeader: {
+  cardHeader: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: spacing.md,
   },
 
-  vehicleBrand: {
-    color: '#1E5AA8',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
+  cardHeaderCopy: {
+    flex: 1,
+    gap: spacing.xs,
   },
 
-  vehicleModel: {
+  vehicleName: {
     color: '#071832',
-    fontSize: typography.fontSize.xl,
+    fontSize: typography.fontSize.lg,
     fontWeight: typography.fontWeight.bold,
   },
 
-  registrationBadge: {
-    alignSelf: 'flex-start',
+  registrationNumber: {
+    color: '#657386',
+    fontSize: typography.fontSize.sm,
+  },
+
+  statusBadge: {
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
     borderWidth: 1,
-    borderColor: '#CBD8EA',
+    borderColor: '#D7DFEA',
     borderRadius: 999,
-    backgroundColor: '#F4F8FD',
+    backgroundColor: '#F8FAFC',
   },
 
-  registrationText: {
-    color: '#10243F',
+  statusPending: {
+    borderColor: '#E8CE98',
+    backgroundColor: '#FFF8E8',
+  },
+
+  statusCancelled: {
+    borderColor: '#E4B8B8',
+    backgroundColor: '#FFF3F3',
+  },
+
+  statusText: {
+    color: '#526174',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
   },
 
-  vehicleDetails: {
+  statusTextPending: {
+    color: '#9A6700',
+  },
+
+  statusTextCancelled: {
+    color: '#B42318',
+  },
+
+  detailGrid: {
     gap: spacing.sm,
   },
 
-  vehicleDetail: {
+  detailLine: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: spacing.md,
@@ -730,17 +903,183 @@ const styles = StyleSheet.create({
     borderBottomColor: '#EEF2F7',
   },
 
-  vehicleDetailLabel: {
+  detailLabel: {
     color: '#657386',
     fontSize: typography.fontSize.sm,
   },
 
-  vehicleDetailValue: {
+  detailValue: {
     flex: 1,
     color: '#071832',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
     textAlign: 'right',
+  },
+
+  cancelButton: {
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E3B6B2',
+    borderRadius: 14,
+    backgroundColor: '#FFF8F7',
+  },
+
+  cancelButtonHovered: {
+    borderColor: '#D98F88',
+    backgroundColor: '#FFF1EF',
+  },
+
+  cancelButtonText: {
+    color: '#B42318',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  modalOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.lg,
+    backgroundColor: 'rgba(7, 24, 50, 0.48)',
+  },
+
+  confirmationModal: {
+    width: '100%',
+    maxWidth: 500,
+    padding: spacing.xl,
+    borderWidth: 1,
+    borderColor: '#D8E3F1',
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
+    gap: spacing.md,
+    shadowColor: '#071832',
+    shadowOffset: {
+      width: 0,
+      height: 22,
+    },
+    shadowOpacity: 0.24,
+    shadowRadius: 42,
+    elevation: 12,
+  },
+
+  modalEyebrow: {
+    color: '#1E5AA8',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  modalTitle: {
+    color: '#071832',
+    fontSize: typography.fontSize.xl,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  modalMessage: {
+    color: '#526174',
+    fontSize: typography.fontSize.md,
+    lineHeight: typography.lineHeight.md,
+  },
+
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+
+  keepButton: {
+    minHeight: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: '#C8D5E6',
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+  },
+
+  keepButtonHovered: {
+    backgroundColor: '#F4F8FD',
+  },
+
+  keepButtonText: {
+    color: '#10243F',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  confirmCancelButton: {
+    minHeight: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: 14,
+    backgroundColor: '#B42318',
+    shadowColor: '#B42318',
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
+    shadowOpacity: 0.2,
+    shadowRadius: 14,
+  },
+
+  confirmCancelButtonHovered: {
+    backgroundColor: '#922018',
+  },
+
+  confirmCancelButtonText: {
+    color: '#FFFFFF',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  successBox: {
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#B7D5C0',
+    borderRadius: 16,
+    backgroundColor: '#F0F9F3',
+    gap: spacing.xs,
+  },
+
+  successTitle: {
+    color: '#166534',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  successText: {
+    color: '#2F6F45',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+
+  errorBox: {
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E9B8B8',
+    borderRadius: 16,
+    backgroundColor: '#FFF5F5',
+    gap: spacing.xs,
+  },
+
+  errorTitle: {
+    color: '#B42318',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  errorText: {
+    color: '#8F2D24',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
   },
 
   emptyPanel: {

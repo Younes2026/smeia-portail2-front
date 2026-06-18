@@ -12,10 +12,17 @@ export type CreateAppointmentInput = {
 
 export type DirectusAppointment = {
   id: number | string;
-  customer_id: number;
-  vehicle_id: number;
-  service_type_id: number;
-  workshop_id: number;
+  customer_id: number | { id: number };
+  vehicle_id:
+    | number
+    | {
+        id: number;
+        model?: string | null;
+        registration_number?: string | null;
+        brand_id?: number | { id: number; name?: string | null } | null;
+      };
+  service_type_id: number | { id: number; name?: string | null };
+  workshop_id: number | { id: number; name?: string | null };
   requested_date: string;
   requested_time: string;
   status: string;
@@ -32,6 +39,30 @@ type CreateAppointmentBody = {
   status: 'pending';
   comment?: string;
 };
+
+const APPOINTMENT_FIELDS = [
+  'id',
+  'customer_id',
+  'vehicle_id.*',
+  'vehicle_id.brand_id.*',
+  'service_type_id.*',
+  'workshop_id.*',
+  'requested_date',
+  'requested_time',
+  'status',
+  'comment',
+] as const;
+
+function buildCustomerAppointmentsEndpoint(customerId: number): string {
+  const searchParams = new URLSearchParams({
+    fields: APPOINTMENT_FIELDS.join(','),
+    sort: '-requested_date,-requested_time',
+  });
+
+  searchParams.set('filter[customer_id][_eq]', String(customerId));
+
+  return `/items/appointments?${searchParams.toString()}`;
+}
 
 export const appointmentsApi = {
   createAppointment: ({
@@ -59,5 +90,20 @@ export const appointmentsApi = {
     }
 
     return httpClient.post<DirectusAppointment>('/items/appointments', body);
+  },
+
+  getAppointmentsByCustomer: (customerId: number) => {
+    return httpClient.get<DirectusAppointment[]>(
+      buildCustomerAppointmentsEndpoint(customerId)
+    );
+  },
+
+  cancelAppointment: (appointmentId: number | string) => {
+    return httpClient.patch<DirectusAppointment>(
+      `/items/appointments/${encodeURIComponent(String(appointmentId))}`,
+      {
+        status: 'cancelled',
+      }
+    );
   },
 };
