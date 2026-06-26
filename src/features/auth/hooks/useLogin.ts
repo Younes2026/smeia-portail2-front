@@ -28,6 +28,11 @@ export function useLogin() {
       try {
         const user = await authApi.getMe();
         const customer = await authApi.getCurrentCustomer(user.id);
+
+        if (!customer) {
+          throw new Error('Aucun compte client SMEIA associé à cet utilisateur.');
+        }
+
         const session = {
           ...loginSession,
           user,

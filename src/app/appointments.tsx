@@ -1,5 +1,10 @@
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 import { AppointmentsScreen } from '@/features/appointments/ui/AppointmentsScreen';
 
 export default function AppointmentsPage() {
-  return <AppointmentsScreen />;
+  return (
+    <ProtectedRoute>
+      <AppointmentsScreen />
+    </ProtectedRoute>
+  );
 }

@@ -1,5 +1,5 @@
 import { Image } from 'expo-image';
-import { Redirect } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -58,7 +58,10 @@ type FocusedField = 'email' | 'password' | null;
 export function LoginScreen() {
   const { width } = useWindowDimensions();
   const isCompact = width < breakpoints.tablet;
-  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const router = useRouter();
+  const accessToken = useAuthStore((state) => state.accessToken);
+  const customer = useAuthStore((state) => state.customer);
+  const hasHydrated = useAuthStore((state) => state.hasHydrated);
   const login = useLogin();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -72,6 +75,7 @@ export function LoginScreen() {
   );
   const canSubmit =
     email.trim().length > 0 && password.length > 0 && !login.isPending;
+  const hasProtectedSession = Boolean(accessToken && customer);
   const logoTranslateX = marqueeProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [0, -LOGO_LOOP_DISTANCE],
@@ -144,9 +148,13 @@ export function LoginScreen() {
     };
   }, [blobProgress, marqueeProgress, secondaryBlobProgress]);
 
-  if (isAuthenticated && !login.isPending) {
-    return <Redirect href="/repairs" />;
-  }
+  useEffect(() => {
+    if (!hasHydrated || !hasProtectedSession || login.isPending) {
+      return;
+    }
+
+    router.replace('/');
+  }, [hasHydrated, hasProtectedSession, login.isPending, router]);
 
   const handleSubmit = () => {
     if (!canSubmit) {

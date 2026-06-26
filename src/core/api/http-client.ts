@@ -1,4 +1,5 @@
 import { env } from '@/core/config/env';
+import { queryClient } from '@/core/query/query-client';
 import { useAuthStore } from '@/store/auth.store';
 
 type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
@@ -115,6 +116,11 @@ async function request<T>(
 
   if (!response.ok) {
     const errorPayload = await parseJson(response);
+
+    if ([401, 403].includes(response.status)) {
+      useAuthStore.getState().clearSession();
+      queryClient.clear();
+    }
 
     throw new HttpError(
       getDirectusErrorMessage(errorPayload, response.status),

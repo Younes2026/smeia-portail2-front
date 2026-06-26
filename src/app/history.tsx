@@ -1,5 +1,10 @@
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 import { HistoryScreen } from '@/features/appointments/ui/HistoryScreen';
 
 export default function HistoryPage() {
-  return <HistoryScreen />;
+  return (
+    <ProtectedRoute>
+      <HistoryScreen />
+    </ProtectedRoute>
+  );
 }

@@ -34,9 +34,11 @@ type AuthState = {
   user: AuthUser | null;
   customer: AuthCustomer | null;
   isAuthenticated: boolean;
+  hasHydrated: boolean;
 
   setSession: (session: AuthSession) => void;
   clearSession: () => void;
+  setHasHydrated: (hasHydrated: boolean) => void;
 };
 
 const emptySession = {
@@ -56,10 +58,18 @@ const emptySession = {
   | 'isAuthenticated'
 >;
 
+function hasProtectedSession(
+  accessToken: string | null,
+  customer: AuthCustomer | null
+): boolean {
+  return Boolean(accessToken && customer);
+}
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
       ...emptySession,
+      hasHydrated: false,
 
       setSession: ({
         accessToken,
@@ -74,17 +84,38 @@ export const useAuthStore = create<AuthState>()(
           expires,
           user,
           customer,
-          isAuthenticated: Boolean(accessToken),
+          isAuthenticated: hasProtectedSession(accessToken, customer),
         });
       },
 
       clearSession: () => {
         set(emptySession);
       },
+
+      setHasHydrated: (hasHydrated) => {
+        set({ hasHydrated });
+      },
     }),
     {
       name: 'smeia-auth-session',
       storage: createJSONStorage(() => localStorageStateStorage),
+      onRehydrateStorage: (state) => (hydratedState) => {
+        const authState = hydratedState ?? state;
+
+        if (!authState.accessToken || !authState.customer) {
+          authState.clearSession();
+        } else {
+          authState.setSession({
+            accessToken: authState.accessToken,
+            refreshToken: authState.refreshToken,
+            expires: authState.expires,
+            user: authState.user,
+            customer: authState.customer,
+          });
+        }
+
+        authState.setHasHydrated(true);
+      },
       partialize: (state) => ({
         accessToken: state.accessToken,
         refreshToken: state.refreshToken,
