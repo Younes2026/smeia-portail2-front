@@ -1,4 +1,3 @@
-import { Link } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
   Pressable,
@@ -21,8 +20,7 @@ import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
 import { ErrorState } from '@/components/feedback/ErrorState';
 import { LoadingState } from '@/components/feedback/LoadingState';
-import { PageContainer } from '@/components/layout/PageContainer';
-import { useLogout } from '@/features/auth/hooks/useLogout';
+import { ClientPortalLayout } from '@/components/layout/ClientPortalLayout';
 import { useCreateAppointment } from '@/features/appointments/hooks/useCreateAppointment';
 import { useVehicles } from '@/features/vehicles/hooks/useVehicles';
 import type { VehicleListItem } from '@/features/vehicles/model/vehicle.types';
@@ -47,33 +45,6 @@ const appointmentTimeSlots = [
   '16:00',
 ] as const;
 
-const navigationItems = [
-  {
-    href: '/repairs',
-    label: 'Tableau de bord',
-  },
-  {
-    href: '/repairs',
-    label: 'Mes réparations',
-  },
-  {
-    href: '/appointments',
-    label: 'Prendre rendez-vous',
-  },
-  {
-    href: '/vehicles',
-    label: 'Mes véhicules',
-  },
-  {
-    href: '/history',
-    label: 'Historique',
-  },
-  {
-    href: '/repairs',
-    label: 'Profil',
-  },
-] as const;
-
 function getDisplayName(
   firstName?: string | null,
   lastName?: string | null,
@@ -82,16 +53,6 @@ function getDisplayName(
   const fullName = `${firstName ?? ''} ${lastName ?? ''}`.trim();
 
   return fullName || email || 'client SMEIA';
-}
-
-function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join('')
-    .toUpperCase();
 }
 
 function formatWorkshopMeta(
@@ -181,7 +142,6 @@ export function AppointmentsScreen() {
   const serviceTypesQuery = useServiceTypes();
   const user = useAuthStore((state) => state.user);
   const customer = useAuthStore((state) => state.customer);
-  const logout = useLogout();
   const createAppointment = useCreateAppointment();
   const vehicles = vehiclesQuery.data ?? [];
   const workshops = workshopsQuery.data ?? [];
@@ -287,49 +247,35 @@ export function AppointmentsScreen() {
 
   if (isLoading) {
     return (
-      <PageContainer>
-        <LoadingState message="Préparation du parcours rendez-vous..." />
-      </PageContainer>
+      <ClientPortalLayout activeRoute="/appointments">
+        <View style={styles.stateContainer}>
+          <LoadingState message="Préparation du parcours rendez-vous..." />
+        </View>
+      </ClientPortalLayout>
     );
   }
 
   if (hasError) {
     return (
-      <PageContainer>
-        <ErrorState
-          title="Erreur de chargement"
-          message="Impossible de charger les informations nécessaires au rendez-vous."
-          onRetry={refetchAll}
-        />
-      </PageContainer>
+      <ClientPortalLayout activeRoute="/appointments">
+        <View style={styles.stateContainer}>
+          <ErrorState
+            title="Erreur de chargement"
+            message="Impossible de charger les informations nécessaires au rendez-vous."
+            onRetry={refetchAll}
+          />
+        </View>
+      </ClientPortalLayout>
     );
   }
 
   return (
-    <PageContainer padded={false}>
-      <View style={styles.page}>
-        <View pointerEvents="none" style={[styles.backgroundShape, styles.shapeTop]} />
-        <View
-          pointerEvents="none"
-          style={[styles.backgroundShape, styles.shapeBottom]}
-        />
-
-        <View style={[styles.shell, isCompact && styles.shellCompact]}>
-          <Sidebar
-            activeHref="/appointments"
-            clientName={clientName}
-            compact={isCompact}
-            logoutDisabled={logout.isPending}
-            onLogout={() => {
-              logout.mutate();
-            }}
-          />
-
-          <ScrollView
-            style={styles.contentScroll}
-            contentContainerStyle={styles.content}
-            showsVerticalScrollIndicator
-          >
+    <ClientPortalLayout activeRoute="/appointments">
+      <ScrollView
+        style={styles.contentScroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator
+      >
             <View style={[styles.header, isNarrow && styles.headerNarrow]}>
               <View style={styles.headerCopy}>
                 <Text style={styles.eyebrow}>Prendre rendez-vous</Text>
@@ -503,95 +449,8 @@ export function AppointmentsScreen() {
                 </View>
               </View>
             </View>
-          </ScrollView>
-        </View>
-      </View>
-    </PageContainer>
-  );
-}
-
-type SidebarProps = {
-  activeHref: '/appointments' | '/history' | '/repairs' | '/vehicles';
-  clientName: string;
-  compact: boolean;
-  logoutDisabled: boolean;
-  onLogout: () => void;
-};
-
-function Sidebar({
-  activeHref,
-  clientName,
-  compact,
-  logoutDisabled,
-  onLogout,
-}: SidebarProps) {
-  return (
-    <View style={[styles.sidebar, compact && styles.sidebarCompact]}>
-      <View style={styles.brandBlock}>
-        <View style={styles.brandMark}>
-          <Text style={styles.brandMarkText}>S</Text>
-        </View>
-        <View>
-          <Text style={styles.brandName}>SMEIA</Text>
-          <Text style={styles.brandSubname}>Portail client</Text>
-        </View>
-      </View>
-
-      <View style={styles.profileBlock}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{getInitials(clientName)}</Text>
-        </View>
-        <View style={styles.profileCopy}>
-          <Text style={styles.profileLabel}>Compte client</Text>
-          <Text style={styles.profileName}>{clientName}</Text>
-        </View>
-      </View>
-
-      <View style={[styles.navList, compact && styles.navListCompact]}>
-        {navigationItems.map((item) => {
-          const isActive = item.href === activeHref;
-
-          return (
-            <Link key={item.label} href={item.href} asChild>
-              <Pressable
-                accessibilityRole="link"
-                style={({ hovered, pressed }) => [
-                  styles.navItem,
-                  isActive && styles.navItemActive,
-                  hovered && styles.navItemHovered,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.navItemText,
-                    isActive && styles.navItemTextActive,
-                  ]}
-                >
-                  {item.label}
-                </Text>
-              </Pressable>
-            </Link>
-          );
-        })}
-      </View>
-
-      <Pressable
-        accessibilityRole="button"
-        disabled={logoutDisabled}
-        onPress={onLogout}
-        style={({ hovered, pressed }) => [
-          styles.logoutButton,
-          hovered && !logoutDisabled && styles.logoutButtonHovered,
-          pressed && !logoutDisabled && styles.pressed,
-          logoutDisabled && styles.disabled,
-        ]}
-      >
-        <Text style={styles.logoutButtonText}>
-          {logoutDisabled ? 'Déconnexion...' : 'Déconnexion'}
-        </Text>
-      </Pressable>
-    </View>
+      </ScrollView>
+    </ClientPortalLayout>
   );
 }
 
@@ -1090,197 +949,10 @@ function EmptyPanel({ title, text }: EmptyPanelProps) {
 }
 
 const styles = StyleSheet.create({
-  page: {
+  stateContainer: {
     flex: 1,
-    overflow: 'hidden',
-    backgroundColor: '#F4F7FB',
-    experimental_backgroundImage:
-      'linear-gradient(135deg, #F8FAFC 0%, #EEF3F8 48%, #E7EEF7 100%)',
-  },
-
-  backgroundShape: {
-    position: 'absolute',
-    borderRadius: 999,
-  },
-
-  shapeTop: {
-    width: 520,
-    height: 520,
-    top: -220,
-    right: -140,
-    backgroundColor: '#D6E2F2',
-    opacity: 0.72,
-  },
-
-  shapeBottom: {
-    width: 620,
-    height: 620,
-    left: -260,
-    bottom: -300,
-    backgroundColor: '#E3E8F0',
-    opacity: 0.86,
-  },
-
-  shell: {
-    flex: 1,
-    flexDirection: 'row',
+    justifyContent: 'center',
     padding: spacing.lg,
-    gap: spacing.lg,
-  },
-
-  shellCompact: {
-    flexDirection: 'column',
-  },
-
-  sidebar: {
-    width: 280,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(130, 145, 166, 0.26)',
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.88)',
-    gap: spacing.lg,
-    shadowColor: '#071832',
-    shadowOffset: {
-      width: 0,
-      height: 18,
-    },
-    shadowOpacity: 0.08,
-    shadowRadius: 32,
-  },
-
-  sidebarCompact: {
-    width: '100%',
-  },
-
-  brandBlock: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-
-  brandMark: {
-    width: 42,
-    height: 42,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 14,
-    backgroundColor: '#071832',
-  },
-
-  brandMarkText: {
-    color: '#FFFFFF',
-    fontSize: typography.fontSize.lg,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  brandName: {
-    color: '#071832',
-    fontSize: typography.fontSize.md,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  brandSubname: {
-    color: '#657386',
-    fontSize: typography.fontSize.sm,
-  },
-
-  profileBlock: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    padding: spacing.md,
-    borderRadius: 18,
-    backgroundColor: '#F3F6FA',
-  },
-
-  avatar: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 16,
-    backgroundColor: '#DDE8F6',
-  },
-
-  avatarText: {
-    color: '#0F4C9A',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  profileCopy: {
-    flex: 1,
-  },
-
-  profileLabel: {
-    color: '#657386',
-    fontSize: typography.fontSize.xs,
-  },
-
-  profileName: {
-    color: '#071832',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
-  },
-
-  navList: {
-    gap: spacing.xs,
-  },
-
-  navListCompact: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-
-  navItem: {
-    minHeight: 42,
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: 14,
-  },
-
-  navItemActive: {
-    backgroundColor: '#E7F0FB',
-  },
-
-  navItemHovered: {
-    backgroundColor: '#F1F5FA',
-  },
-
-  navItemText: {
-    color: '#526174',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.medium,
-  },
-
-  navItemTextActive: {
-    color: '#0F4C9A',
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  logoutButton: {
-    minHeight: 42,
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: '#D7DFEA',
-    borderRadius: 14,
-    marginTop: 'auto',
-    backgroundColor: '#FFFFFF',
-  },
-
-  logoutButtonHovered: {
-    borderColor: '#C8D5E6',
-    backgroundColor: '#F8FAFC',
-  },
-
-  logoutButtonText: {
-    color: '#10243F',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
   },
 
   contentScroll: {
@@ -1289,6 +961,7 @@ const styles = StyleSheet.create({
 
   content: {
     gap: spacing.lg,
+    padding: spacing.sm,
     paddingBottom: spacing.lg,
   },
 

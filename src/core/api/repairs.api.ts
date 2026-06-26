@@ -3,6 +3,7 @@ import type { DirectusRepair } from '@/features/repairs/model/repair.types';
 
 const REPAIRS_FIELDS = [
   '*',
+  'customer_id.*',
   'vehicle_id.*',
   'vehicle_id.customer_id.*',
   'vehicle_id.brand_id.*',
@@ -13,7 +14,9 @@ const REPAIRS_FIELDS = [
 
 type RepairsQueryOptions = {
   customerId?: number;
+  repairId?: number;
   vehicleId?: number;
+  limit?: number;
 };
 
 function buildRepairsEndpoint(
@@ -31,8 +34,16 @@ function buildRepairsEndpoint(
     );
   }
 
+  if (options.repairId !== undefined) {
+    searchParams.set('filter[id][_eq]', String(options.repairId));
+  }
+
   if (options.vehicleId !== undefined) {
     searchParams.set('filter[vehicle_id][_eq]', String(options.vehicleId));
+  }
+
+  if (options.limit !== undefined) {
+    searchParams.set('limit', String(options.limit));
   }
 
   return `${path}?${searchParams.toString()}`;
@@ -45,7 +56,19 @@ export const repairsApi = {
     );
   },
 
-  getRepairById: (id: number) => {
+  getRepairById: async (id: number, customerId?: number) => {
+    if (customerId !== undefined) {
+      const repairs = await httpClient.get<DirectusRepair[]>(
+        buildRepairsEndpoint('/items/repairs', {
+          customerId,
+          repairId: id,
+          limit: 1,
+        })
+      );
+
+      return repairs[0] ?? null;
+    }
+
     return httpClient.get<DirectusRepair>(
       buildRepairsEndpoint(`/items/repairs/${id}`)
     );

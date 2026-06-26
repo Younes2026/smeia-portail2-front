@@ -5,7 +5,9 @@ export type AppointmentListItem = {
   serviceType: string;
   workshop: string;
   requestedDate: string;
+  requestedDateValue: string;
   requestedTime: string;
+  requestedTimeValue: string;
   status: string;
   comment: string;
 };

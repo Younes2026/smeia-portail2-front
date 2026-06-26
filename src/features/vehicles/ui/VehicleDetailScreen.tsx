@@ -10,7 +10,7 @@ import {
 
 import { ErrorState } from '@/components/feedback/ErrorState';
 import { LoadingState } from '@/components/feedback/LoadingState';
-import { PageContainer } from '@/components/layout/PageContainer';
+import { ClientPortalLayout } from '@/components/layout/ClientPortalLayout';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
@@ -43,40 +43,37 @@ export function VehicleDetailScreen() {
 
   if (isLoading) {
     return (
-      <PageContainer>
-        <LoadingState message="Chargement du véhicule..." />
-      </PageContainer>
+      <ClientPortalLayout activeRoute="/vehicles">
+        <View style={styles.stateContainer}>
+          <LoadingState message="Chargement du véhicule..." />
+        </View>
+      </ClientPortalLayout>
     );
   }
 
   if (isError) {
     return (
-      <PageContainer>
-        <ErrorState
-          title="Erreur de chargement"
-          message="Impossible de charger le détail du véhicule."
-          onRetry={() => {
-            refetch();
-          }}
-        />
-      </PageContainer>
+      <ClientPortalLayout activeRoute="/vehicles">
+        <View style={styles.stateContainer}>
+          <ErrorState
+            title="Erreur de chargement"
+            message="Impossible de charger le détail du véhicule."
+            onRetry={() => {
+              refetch();
+            }}
+          />
+        </View>
+      </ClientPortalLayout>
     );
   }
 
   return (
-    <PageContainer padded={false}>
-      <View style={styles.page}>
-        <View pointerEvents="none" style={[styles.backgroundShape, styles.shapeTop]} />
-        <View
-          pointerEvents="none"
-          style={[styles.backgroundShape, styles.shapeBottom]}
-        />
-
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.content}
-          showsVerticalScrollIndicator
-        >
+    <ClientPortalLayout activeRoute="/vehicles">
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator
+      >
           <View style={[styles.header, isNarrow && styles.headerNarrow]}>
             <View style={styles.headerCopy}>
               <Text style={styles.eyebrow}>Détail véhicule</Text>
@@ -161,9 +158,8 @@ export function VehicleDetailScreen() {
               </Text>
             </View>
           )}
-        </ScrollView>
-      </View>
-    </PageContainer>
+      </ScrollView>
+    </ClientPortalLayout>
   );
 }
 
@@ -220,35 +216,10 @@ function DetailLine({ label, value }: DetailLineProps) {
 }
 
 const styles = StyleSheet.create({
-  page: {
+  stateContainer: {
     flex: 1,
-    overflow: 'hidden',
-    backgroundColor: '#F4F7FB',
-    experimental_backgroundImage:
-      'linear-gradient(135deg, #F8FAFC 0%, #EEF3F8 48%, #E7EEF7 100%)',
-  },
-
-  backgroundShape: {
-    position: 'absolute',
-    borderRadius: 999,
-  },
-
-  shapeTop: {
-    width: 520,
-    height: 520,
-    top: -220,
-    right: -140,
-    backgroundColor: '#D6E2F2',
-    opacity: 0.72,
-  },
-
-  shapeBottom: {
-    width: 620,
-    height: 620,
-    left: -260,
-    bottom: -300,
-    backgroundColor: '#E3E8F0',
-    opacity: 0.86,
+    justifyContent: 'center',
+    padding: spacing.lg,
   },
 
   scroll: {
@@ -257,7 +228,7 @@ const styles = StyleSheet.create({
 
   content: {
     gap: spacing.lg,
-    padding: spacing.lg,
+    padding: spacing.sm,
     paddingBottom: spacing.xl,
   },
 

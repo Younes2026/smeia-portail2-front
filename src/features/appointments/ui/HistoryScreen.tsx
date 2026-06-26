@@ -1,18 +1,19 @@
 import { Link } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
 
 import { ErrorState } from '@/components/feedback/ErrorState';
 import { LoadingState } from '@/components/feedback/LoadingState';
-import { PageContainer } from '@/components/layout/PageContainer';
+import { ClientPortalLayout } from '@/components/layout/ClientPortalLayout';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
@@ -21,99 +22,270 @@ import {
   useCancelAppointment,
 } from '@/features/appointments/hooks/useAppointmentsHistory';
 import type { AppointmentListItem } from '@/features/appointments/model/appointment.types';
-import { useLogout } from '@/features/auth/hooks/useLogout';
-import { useAuthStore } from '@/store/auth.store';
 
-const navigationItems = [
-  {
-    href: '/repairs',
-    label: 'Tableau de bord',
-  },
-  {
-    href: '/repairs',
-    label: 'Mes réparations',
-  },
-  {
-    href: '/appointments',
-    label: 'Prendre rendez-vous',
-  },
-  {
-    href: '/vehicles',
-    label: 'Mes véhicules',
-  },
-  {
-    href: '/history',
-    label: 'Historique',
-  },
-  {
-    href: '/repairs',
-    label: 'Profil',
-  },
+const historyTabs = [
+  { label: 'Tous', value: 'all' },
+  { label: 'Rendez-vous', value: 'appointments' },
+  { label: 'Réparations', value: 'repairs' },
 ] as const;
 
-function getDisplayName(
-  firstName?: string | null,
-  lastName?: string | null,
-  email?: string | null
-): string {
-  const fullName = `${firstName ?? ''} ${lastName ?? ''}`.trim();
+const statusFilterOptions = [
+  { label: 'Tous les statuts', value: 'all' },
+  { label: 'En attente', value: 'pending' },
+  { label: 'Confirmé', value: 'confirmed' },
+  { label: 'Annulé', value: 'cancelled' },
+  { label: 'Terminé', value: 'completed' },
+] as const;
 
-  return fullName || email || 'client SMEIA';
-}
+const sortOptions = [
+  { label: 'Plus récent d’abord', value: 'desc' },
+  { label: 'Plus ancien d’abord', value: 'asc' },
+] as const;
 
-function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join('')
-    .toUpperCase();
+type HistoryTab = (typeof historyTabs)[number]['value'];
+type StatusFilter = (typeof statusFilterOptions)[number]['value'];
+type AppointmentStatusKey = Exclude<StatusFilter, 'all'>;
+type SortDirection = (typeof sortOptions)[number]['value'];
+
+type VehicleFilterOption = {
+  label: string;
+  value: string;
+};
+
+function normalizeText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
 }
 
 function normalizeStatus(status: string): string {
-  return status.trim().toLowerCase();
+  return normalizeText(status);
+}
+
+function getStatusKey(status: string): AppointmentStatusKey | 'other' {
+  const normalizedStatus = normalizeStatus(status);
+
+  if (['pending', 'en attente'].includes(normalizedStatus)) {
+    return 'pending';
+  }
+
+  if (['confirmed', 'confirme'].includes(normalizedStatus)) {
+    return 'confirmed';
+  }
+
+  if (['cancelled', 'canceled', 'annule', 'annulee'].includes(normalizedStatus)) {
+    return 'cancelled';
+  }
+
+  if (
+    ['completed', 'complete', 'finished', 'done', 'termine', 'cloture'].includes(
+      normalizedStatus
+    )
+  ) {
+    return 'completed';
+  }
+
+  return 'other';
 }
 
 function getStatusLabel(status: string): string {
-  const normalizedStatus = normalizeStatus(status);
+  const statusKey = getStatusKey(status);
 
-  if (normalizedStatus === 'pending') {
+  if (statusKey === 'pending') {
     return 'En attente';
   }
 
-  if (normalizedStatus === 'cancelled') {
+  if (statusKey === 'cancelled') {
     return 'Annulé';
   }
 
-  if (normalizedStatus === 'confirmed') {
+  if (statusKey === 'confirmed') {
     return 'Confirmé';
   }
 
-  return status;
+  if (statusKey === 'completed') {
+    return 'Terminé';
+  }
+
+  return status.trim() || 'Statut non renseigné';
+}
+
+function getVehicleFilterValue(appointment: AppointmentListItem): string {
+  return `${appointment.vehicle}::${appointment.registrationNumber}`;
+}
+
+function getVehicleFilterLabel(appointment: AppointmentListItem): string {
+  const vehicle = appointment.vehicle.trim() || 'Véhicule non renseigné';
+  const registrationNumber =
+    appointment.registrationNumber.trim() || 'Immatriculation non renseignée';
+
+  return `${vehicle} · ${registrationNumber}`;
+}
+
+function getAppointmentTimestamp(appointment: AppointmentListItem): number {
+  const dateValue = appointment.requestedDateValue.trim();
+
+  if (!dateValue) {
+    return 0;
+  }
+
+  const [year, month, day] = dateValue.split('-').map(Number);
+
+  if (!year || !month || !day) {
+    const fallbackTimestamp = new Date(dateValue).getTime();
+
+    return Number.isNaN(fallbackTimestamp) ? 0 : fallbackTimestamp;
+  }
+
+  const [hours = '0', minutes = '0'] =
+    appointment.requestedTimeValue.trim().split(':');
+  const timestamp = new Date(
+    year,
+    month - 1,
+    day,
+    Number(hours) || 0,
+    Number(minutes) || 0
+  ).getTime();
+
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function isAppointmentDateClearlyPast(
+  appointment: AppointmentListItem
+): boolean {
+  const dateValue = appointment.requestedDateValue.trim();
+
+  if (!dateValue) {
+    return false;
+  }
+
+  const [year, month, day] = dateValue.split('-').map(Number);
+
+  if (!year || !month || !day) {
+    return false;
+  }
+
+  const appointmentDate = new Date(year, month - 1, day);
+  const today = new Date();
+
+  appointmentDate.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+
+  return appointmentDate.getTime() < today.getTime();
+}
+
+function canCancelAppointment(appointment: AppointmentListItem): boolean {
+  return (
+    getStatusKey(appointment.status) === 'pending' &&
+    !isAppointmentDateClearlyPast(appointment)
+  );
+}
+
+function matchesSearch(
+  appointment: AppointmentListItem,
+  normalizedSearch: string
+): boolean {
+  if (!normalizedSearch) {
+    return true;
+  }
+
+  const searchableText = normalizeText(
+    [
+      appointment.vehicle,
+      appointment.registrationNumber,
+      appointment.serviceType,
+      appointment.workshop,
+      appointment.requestedDate,
+      appointment.requestedTime,
+      getStatusLabel(appointment.status),
+      appointment.comment,
+    ].join(' ')
+  );
+
+  return searchableText.includes(normalizedSearch);
+}
+
+function matchesStatusFilter(
+  appointment: AppointmentListItem,
+  statusFilter: StatusFilter
+): boolean {
+  return statusFilter === 'all' || getStatusKey(appointment.status) === statusFilter;
+}
+
+function matchesVehicleFilter(
+  appointment: AppointmentListItem,
+  vehicleFilter: string
+): boolean {
+  return (
+    vehicleFilter === 'all' || getVehicleFilterValue(appointment) === vehicleFilter
+  );
 }
 
 export function HistoryScreen() {
   const { width } = useWindowDimensions();
-  const isCompact = width < breakpoints.desktop;
   const isNarrow = width < breakpoints.tablet;
   const appointmentsQuery = useAppointmentsHistory();
   const cancelAppointment = useCancelAppointment();
   const [appointmentToCancel, setAppointmentToCancel] = useState<
     number | string | null
   >(null);
+  const [activeTab, setActiveTab] = useState<HistoryTab>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [vehicleFilter, setVehicleFilter] = useState('all');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const appointments = appointmentsQuery.data ?? [];
-  const user = useAuthStore((state) => state.user);
-  const customer = useAuthStore((state) => state.customer);
-  const logout = useLogout();
-  const clientName = getDisplayName(
-    customer?.firstName ?? user?.firstName,
-    customer?.lastName ?? user?.lastName,
-    customer?.email ?? user?.email
-  );
   const pendingCount = appointments.filter(
-    (appointment) => normalizeStatus(appointment.status) === 'pending'
+    (appointment) => getStatusKey(appointment.status) === 'pending'
   ).length;
+
+  const vehicleOptions = useMemo(() => {
+    const options = new Map<string, VehicleFilterOption>();
+
+    appointments.forEach((appointment) => {
+      const value = getVehicleFilterValue(appointment);
+
+      if (!options.has(value)) {
+        options.set(value, {
+          label: getVehicleFilterLabel(appointment),
+          value,
+        });
+      }
+    });
+
+    return Array.from(options.values()).sort((first, second) =>
+      first.label.localeCompare(second.label, 'fr-FR')
+    );
+  }, [appointments]);
+
+  const filteredAppointments = useMemo(() => {
+    const normalizedSearch = normalizeText(searchQuery);
+
+    return appointments
+      .filter((appointment) => matchesSearch(appointment, normalizedSearch))
+      .filter((appointment) => matchesStatusFilter(appointment, statusFilter))
+      .filter((appointment) => matchesVehicleFilter(appointment, vehicleFilter))
+      .sort((first, second) => {
+        const firstTimestamp = getAppointmentTimestamp(first);
+        const secondTimestamp = getAppointmentTimestamp(second);
+
+        if (firstTimestamp === secondTimestamp) {
+          return String(first.id).localeCompare(String(second.id), 'fr-FR');
+        }
+
+        return sortDirection === 'desc'
+          ? secondTimestamp - firstTimestamp
+          : firstTimestamp - secondTimestamp;
+      });
+  }, [appointments, searchQuery, sortDirection, statusFilter, vehicleFilter]);
+
+  const hasActiveFilters =
+    searchQuery.trim().length > 0 ||
+    statusFilter !== 'all' ||
+    vehicleFilter !== 'all';
+  const isRepairsTab = activeTab === 'repairs';
 
   useEffect(() => {
     if (cancelAppointment.isSuccess) {
@@ -121,278 +293,371 @@ export function HistoryScreen() {
     }
   }, [cancelAppointment.isSuccess]);
 
+  useEffect(() => {
+    if (
+      vehicleFilter !== 'all' &&
+      !vehicleOptions.some((option) => option.value === vehicleFilter)
+    ) {
+      setVehicleFilter('all');
+    }
+  }, [vehicleFilter, vehicleOptions]);
+
   if (appointmentsQuery.isLoading) {
     return (
-      <PageContainer>
-        <LoadingState message="Chargement de vos rendez-vous..." />
-      </PageContainer>
+      <ClientPortalLayout activeRoute="/history">
+        <View style={styles.stateContainer}>
+          <LoadingState message="Chargement de l’historique..." />
+        </View>
+      </ClientPortalLayout>
     );
   }
 
   if (appointmentsQuery.isError) {
     return (
-      <PageContainer>
-        <ErrorState
-          title="Erreur de chargement"
-          message="Impossible de charger l'historique de vos rendez-vous."
-          onRetry={() => {
-            appointmentsQuery.refetch();
-          }}
-        />
-      </PageContainer>
+      <ClientPortalLayout activeRoute="/history">
+        <View style={styles.stateContainer}>
+          <ErrorState
+            title="Erreur de chargement"
+            message="Impossible de charger votre historique."
+            onRetry={() => {
+              appointmentsQuery.refetch();
+            }}
+          />
+        </View>
+      </ClientPortalLayout>
     );
   }
 
   return (
-    <PageContainer padded={false}>
-      <View style={styles.page}>
-        <View pointerEvents="none" style={[styles.backgroundShape, styles.shapeTop]} />
-        <View
-          pointerEvents="none"
-          style={[styles.backgroundShape, styles.shapeBottom]}
-        />
+    <ClientPortalLayout activeRoute="/history">
+      <ScrollView
+        style={styles.contentScroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator
+      >
+        <View style={[styles.header, isNarrow && styles.headerNarrow]}>
+          <View style={styles.headerCopy}>
+            <Text style={styles.eyebrow}>Espace client</Text>
+            <Text style={styles.title}>Historique</Text>
+            <Text style={styles.subtitle}>
+              Consultez vos anciennes demandes de rendez-vous, suivez leur
+              statut et retrouvez les interventions liées à vos véhicules.
+            </Text>
+          </View>
 
-        <View style={[styles.shell, isCompact && styles.shellCompact]}>
-          <View style={[styles.sidebar, isCompact && styles.sidebarCompact]}>
-            <View style={styles.brandBlock}>
-              <View style={styles.brandMark}>
-                <Text style={styles.brandMarkText}>S</Text>
-              </View>
-              <View>
-                <Text style={styles.brandName}>SMEIA</Text>
-                <Text style={styles.brandSubname}>Portail client</Text>
-              </View>
-            </View>
-
-            <View style={styles.profileBlock}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{getInitials(clientName)}</Text>
-              </View>
-              <View style={styles.profileCopy}>
-                <Text style={styles.profileLabel}>Compte client</Text>
-                <Text style={styles.profileName}>{clientName}</Text>
-              </View>
-            </View>
-
-            <View style={[styles.navList, isCompact && styles.navListCompact]}>
-              {navigationItems.map((item) => {
-                const isActive = item.href === '/history';
-
-                return (
-                  <Link key={item.label} href={item.href} asChild>
-                    <Pressable
-                      accessibilityRole="link"
-                      style={({ hovered, pressed }) => [
-                        styles.navItem,
-                        isActive && styles.navItemActive,
-                        hovered && styles.navItemHovered,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.navItemText,
-                          isActive && styles.navItemTextActive,
-                        ]}
-                      >
-                        {item.label}
-                      </Text>
-                    </Pressable>
-                  </Link>
-                );
-              })}
-            </View>
-
+          <Link href="/appointments" asChild>
             <Pressable
-              accessibilityRole="button"
-              disabled={logout.isPending}
-              onPress={() => {
-                logout.mutate();
-              }}
+              accessibilityRole="link"
               style={({ hovered, pressed }) => [
-                styles.logoutButton,
-                hovered && !logout.isPending && styles.logoutButtonHovered,
-                pressed && !logout.isPending && styles.pressed,
-                logout.isPending && styles.disabled,
+                styles.primaryAction,
+                hovered && styles.primaryActionHovered,
+                pressed && styles.pressed,
               ]}
             >
-              <Text style={styles.logoutButtonText}>
-                {logout.isPending ? 'Déconnexion...' : 'Déconnexion'}
-              </Text>
+              <Text style={styles.primaryActionText}>Nouveau rendez-vous</Text>
             </Pressable>
-          </View>
-
-          <ScrollView
-            style={styles.contentScroll}
-            contentContainerStyle={styles.content}
-            showsVerticalScrollIndicator
-          >
-            <View style={[styles.header, isNarrow && styles.headerNarrow]}>
-              <View style={styles.headerCopy}>
-                <Text style={styles.eyebrow}>Historique</Text>
-                <Text style={styles.title}>Mes rendez-vous</Text>
-                <Text style={styles.subtitle}>
-                  Consultez vos demandes de rendez-vous et annulez celles qui
-                  sont encore en attente.
-                </Text>
-              </View>
-
-              <Link href="/appointments" asChild>
-                <Pressable
-                  accessibilityRole="link"
-                  style={({ hovered, pressed }) => [
-                    styles.primaryAction,
-                    hovered && styles.primaryActionHovered,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.primaryActionText}>
-                    Nouveau rendez-vous
-                  </Text>
-                </Pressable>
-              </Link>
-            </View>
-
-            <View style={[styles.summaryGrid, isNarrow && styles.stack]}>
-              <SummaryCard
-                detail="Demandes liées à votre compte"
-                label="Rendez-vous"
-                value={String(appointments.length)}
-              />
-              <SummaryCard
-                detail="Annulation encore possible"
-                label="En attente"
-                value={String(pendingCount)}
-              />
-              <SummaryCard
-                detail="Historique conservé dans Directus"
-                label="Suivi"
-                value="Sécurisé"
-              />
-            </View>
-
-            {cancelAppointment.isSuccess ? (
-              <View style={styles.successBox}>
-                <Text style={styles.successTitle}>Rendez-vous annulé</Text>
-                <Text style={styles.successText}>
-                  Le statut a été mis à jour et l'historique a été actualisé.
-                </Text>
-              </View>
-            ) : null}
-
-            {cancelAppointment.isError ? (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorTitle}>Annulation impossible</Text>
-                <Text style={styles.errorText}>
-                  La mise à jour du rendez-vous a échoué. Veuillez réessayer.
-                </Text>
-              </View>
-            ) : null}
-
-            {appointments.length > 0 ? (
-              <View style={styles.appointmentGrid}>
-                {appointments.map((appointment) => (
-                  <AppointmentCard
-                    key={String(appointment.id)}
-                    appointment={appointment}
-                    isCancelling={
-                      cancelAppointment.isPending &&
-                      String(cancelAppointment.variables) ===
-                        String(appointment.id)
-                    }
-                    onCancel={() => {
-                      cancelAppointment.reset();
-                      setAppointmentToCancel(appointment.id);
-                    }}
-                  />
-                ))}
-              </View>
-            ) : (
-              <View style={styles.emptyPanel}>
-                <Text style={styles.emptyTitle}>Aucun rendez-vous</Text>
-                <Text style={styles.emptyText}>
-                  Vous n'avez pas encore créé de demande de rendez-vous.
-                </Text>
-              </View>
-            )}
-          </ScrollView>
+          </Link>
         </View>
 
-        <Modal
-          animationType="fade"
-          onRequestClose={() => {
-            if (!cancelAppointment.isPending) {
-              setAppointmentToCancel(null);
+        <View style={[styles.summaryGrid, isNarrow && styles.stack]}>
+          <SummaryCard
+            detail="Demandes de rendez-vous enregistrées"
+            label="Demandes"
+            value={String(appointments.length)}
+          />
+          <SummaryCard
+            detail="Demandes en attente de confirmation"
+            label="En attente"
+            value={String(pendingCount)}
+          />
+          <SummaryCard
+            detail="Données liées à votre compte client"
+            label="Suivi sécurisé"
+            value="Espace client"
+          />
+        </View>
+
+        <HistoryFilters
+          activeTab={activeTab}
+          isNarrow={isNarrow}
+          searchQuery={searchQuery}
+          sortDirection={sortDirection}
+          statusFilter={statusFilter}
+          vehicleFilter={vehicleFilter}
+          vehicleOptions={vehicleOptions}
+          onSearchQueryChange={setSearchQuery}
+          onSortDirectionChange={setSortDirection}
+          onStatusFilterChange={setStatusFilter}
+          onTabChange={setActiveTab}
+          onVehicleFilterChange={setVehicleFilter}
+        />
+
+        {cancelAppointment.isSuccess ? (
+          <View style={styles.successBox}>
+            <Text style={styles.successTitle}>Rendez-vous annulé</Text>
+            <Text style={styles.successText}>
+              Le statut a été mis à jour et l’historique a été actualisé.
+            </Text>
+          </View>
+        ) : null}
+
+        {cancelAppointment.isError ? (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorTitle}>Annulation impossible</Text>
+            <Text style={styles.errorText}>
+              La mise à jour du rendez-vous a échoué. Veuillez réessayer.
+            </Text>
+          </View>
+        ) : null}
+
+        {isRepairsTab ? (
+          <EmptyPanel
+            title="Réparations"
+            text="Aucune réparation terminée à afficher pour le moment."
+          />
+        ) : filteredAppointments.length > 0 ? (
+          <View style={styles.appointmentGrid}>
+            {filteredAppointments.map((appointment) => (
+              <AppointmentCard
+                key={String(appointment.id)}
+                appointment={appointment}
+                isCancelling={
+                  cancelAppointment.isPending &&
+                  String(cancelAppointment.variables) === String(appointment.id)
+                }
+                onCancel={() => {
+                  cancelAppointment.reset();
+                  setAppointmentToCancel(appointment.id);
+                }}
+              />
+            ))}
+          </View>
+        ) : (
+          <EmptyPanel
+            title={hasActiveFilters ? 'Aucun résultat' : 'Historique vide'}
+            text={
+              hasActiveFilters
+                ? 'Aucun élément ne correspond à vos filtres.'
+                : 'Aucun élément d’historique trouvé.'
             }
-          }}
-          transparent
-          visible={appointmentToCancel !== null}
-        >
-          <View style={styles.modalOverlay}>
-            <View
-              accessibilityRole="alert"
-              style={styles.confirmationModal}
-            >
-              <Text style={styles.modalEyebrow}>Rendez-vous SMEIA</Text>
-              <Text style={styles.modalTitle}>Confirmer l’annulation</Text>
-              <Text style={styles.modalMessage}>
-                Voulez-vous vraiment annuler ce rendez-vous ? Cette action
-                conservera l’historique dans Directus.
-              </Text>
+          />
+        )}
+      </ScrollView>
 
-              <View style={[styles.modalActions, isNarrow && styles.stack]}>
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={cancelAppointment.isPending}
-                  onPress={() => {
-                    setAppointmentToCancel(null);
-                  }}
-                  style={({ hovered, pressed }) => [
-                    styles.keepButton,
-                    hovered &&
-                      !cancelAppointment.isPending &&
-                      styles.keepButtonHovered,
-                    pressed && !cancelAppointment.isPending && styles.pressed,
-                    cancelAppointment.isPending && styles.disabled,
-                  ]}
-                >
-                  <Text style={styles.keepButtonText}>
-                    Garder le rendez-vous
-                  </Text>
-                </Pressable>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => {
+          if (!cancelAppointment.isPending) {
+            setAppointmentToCancel(null);
+          }
+        }}
+        transparent
+        visible={appointmentToCancel !== null}
+      >
+        <View style={styles.modalOverlay}>
+          <View accessibilityRole="alert" style={styles.confirmationModal}>
+            <Text style={styles.modalEyebrow}>Rendez-vous SMEIA</Text>
+            <Text style={styles.modalTitle}>Confirmer l’annulation</Text>
+            <Text style={styles.modalMessage}>
+              Voulez-vous vraiment annuler ce rendez-vous ? Cette action
+              conservera l’historique dans votre espace client.
+            </Text>
 
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={
-                    appointmentToCancel === null ||
-                    cancelAppointment.isPending
+            <View style={[styles.modalActions, isNarrow && styles.stack]}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={cancelAppointment.isPending}
+                onPress={() => {
+                  setAppointmentToCancel(null);
+                }}
+                style={({ hovered, pressed }) => [
+                  styles.keepButton,
+                  hovered &&
+                    !cancelAppointment.isPending &&
+                    styles.keepButtonHovered,
+                  pressed && !cancelAppointment.isPending && styles.pressed,
+                  cancelAppointment.isPending && styles.disabled,
+                ]}
+              >
+                <Text style={styles.keepButtonText}>Garder le rendez-vous</Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                disabled={
+                  appointmentToCancel === null || cancelAppointment.isPending
+                }
+                onPress={() => {
+                  if (appointmentToCancel !== null) {
+                    cancelAppointment.mutate(appointmentToCancel);
                   }
-                  onPress={() => {
-                    if (appointmentToCancel !== null) {
-                      cancelAppointment.mutate(appointmentToCancel);
-                    }
-                  }}
-                  style={({ hovered, pressed }) => [
-                    styles.confirmCancelButton,
-                    hovered &&
-                      !cancelAppointment.isPending &&
-                      styles.confirmCancelButtonHovered,
-                    pressed && !cancelAppointment.isPending && styles.pressed,
-                    cancelAppointment.isPending && styles.disabled,
-                  ]}
-                >
-                  <Text style={styles.confirmCancelButtonText}>
-                    {cancelAppointment.isPending
-                      ? 'Annulation...'
-                      : 'Oui, annuler'}
-                  </Text>
-                </Pressable>
-              </View>
+                }}
+                style={({ hovered, pressed }) => [
+                  styles.confirmCancelButton,
+                  hovered &&
+                    !cancelAppointment.isPending &&
+                    styles.confirmCancelButtonHovered,
+                  pressed && !cancelAppointment.isPending && styles.pressed,
+                  cancelAppointment.isPending && styles.disabled,
+                ]}
+              >
+                <Text style={styles.confirmCancelButtonText}>
+                  {cancelAppointment.isPending
+                    ? 'Annulation...'
+                    : 'Oui, annuler'}
+                </Text>
+              </Pressable>
             </View>
           </View>
-        </Modal>
+        </View>
+      </Modal>
+    </ClientPortalLayout>
+  );
+}
+
+type HistoryFiltersProps = {
+  activeTab: HistoryTab;
+  isNarrow: boolean;
+  searchQuery: string;
+  sortDirection: SortDirection;
+  statusFilter: StatusFilter;
+  vehicleFilter: string;
+  vehicleOptions: VehicleFilterOption[];
+  onSearchQueryChange: (value: string) => void;
+  onSortDirectionChange: (value: SortDirection) => void;
+  onStatusFilterChange: (value: StatusFilter) => void;
+  onTabChange: (value: HistoryTab) => void;
+  onVehicleFilterChange: (value: string) => void;
+};
+
+function HistoryFilters({
+  activeTab,
+  isNarrow,
+  searchQuery,
+  sortDirection,
+  statusFilter,
+  vehicleFilter,
+  vehicleOptions,
+  onSearchQueryChange,
+  onSortDirectionChange,
+  onStatusFilterChange,
+  onTabChange,
+  onVehicleFilterChange,
+}: HistoryFiltersProps) {
+  return (
+    <View style={styles.filtersPanel}>
+      <View style={styles.tabList}>
+        {historyTabs.map((tab) => (
+          <FilterChip
+            key={tab.value}
+            active={activeTab === tab.value}
+            label={tab.label}
+            onPress={() => {
+              onTabChange(tab.value);
+            }}
+          />
+        ))}
       </View>
-    </PageContainer>
+
+      <View style={[styles.filterRow, isNarrow && styles.stack]}>
+        <View style={styles.searchField}>
+          <Text style={styles.filterLabel}>Recherche</Text>
+          <TextInput
+            accessibilityLabel="Rechercher dans l’historique"
+            onChangeText={onSearchQueryChange}
+            placeholder="Rechercher par véhicule, service, atelier..."
+            placeholderTextColor="#8A97A8"
+            style={styles.searchInput}
+            value={searchQuery}
+          />
+        </View>
+
+        <View style={styles.filterGroup}>
+          <Text style={styles.filterLabel}>Statut</Text>
+          <View style={styles.chipList}>
+            {statusFilterOptions.map((option) => (
+              <FilterChip
+                key={option.value}
+                active={statusFilter === option.value}
+                label={option.label}
+                onPress={() => {
+                  onStatusFilterChange(option.value);
+                }}
+              />
+            ))}
+          </View>
+        </View>
+      </View>
+
+      <View style={[styles.filterRow, isNarrow && styles.stack]}>
+        <View style={styles.filterGroup}>
+          <Text style={styles.filterLabel}>Véhicule</Text>
+          <View style={styles.chipList}>
+            <FilterChip
+              active={vehicleFilter === 'all'}
+              label="Tous les véhicules"
+              onPress={() => {
+                onVehicleFilterChange('all');
+              }}
+            />
+            {vehicleOptions.map((option) => (
+              <FilterChip
+                key={option.value}
+                active={vehicleFilter === option.value}
+                label={option.label}
+                onPress={() => {
+                  onVehicleFilterChange(option.value);
+                }}
+              />
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.filterGroup}>
+          <Text style={styles.filterLabel}>Tri</Text>
+          <View style={styles.chipList}>
+            {sortOptions.map((option) => (
+              <FilterChip
+                key={option.value}
+                active={sortDirection === option.value}
+                label={option.label}
+                onPress={() => {
+                  onSortDirectionChange(option.value);
+                }}
+              />
+            ))}
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+type FilterChipProps = {
+  active: boolean;
+  label: string;
+  onPress: () => void;
+};
+
+function FilterChip({ active, label, onPress }: FilterChipProps) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.chip,
+        active && styles.chipActive,
+        hovered && !active && styles.chipHovered,
+        pressed && styles.pressed,
+      ]}
+    >
+      <Text
+        numberOfLines={1}
+        style={[styles.chipText, active && styles.chipTextActive]}
+      >
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -423,16 +688,22 @@ function AppointmentCard({
   isCancelling,
   onCancel,
 }: AppointmentCardProps) {
-  const isPending = normalizeStatus(appointment.status) === 'pending';
-  const isCancelled = normalizeStatus(appointment.status) === 'cancelled';
+  const statusKey = getStatusKey(appointment.status);
+  const isPending = statusKey === 'pending';
+  const isCancelled = statusKey === 'cancelled';
+  const isConfirmed = statusKey === 'confirmed';
+  const isCompleted = statusKey === 'completed';
+  const canCancel = canCancelAppointment(appointment);
 
   return (
     <View style={styles.appointmentCard}>
       <View style={styles.cardHeader}>
         <View style={styles.cardHeaderCopy}>
-          <Text style={styles.vehicleName}>{appointment.vehicle}</Text>
+          <Text style={styles.vehicleName}>
+            {appointment.vehicle || 'Véhicule non renseigné'}
+          </Text>
           <Text style={styles.registrationNumber}>
-            {appointment.registrationNumber}
+            {appointment.registrationNumber || 'Immatriculation non renseignée'}
           </Text>
         </View>
         <View
@@ -440,6 +711,8 @@ function AppointmentCard({
             styles.statusBadge,
             isPending && styles.statusPending,
             isCancelled && styles.statusCancelled,
+            isConfirmed && styles.statusConfirmed,
+            isCompleted && styles.statusCompleted,
           ]}
         >
           <Text
@@ -447,6 +720,8 @@ function AppointmentCard({
               styles.statusText,
               isPending && styles.statusTextPending,
               isCancelled && styles.statusTextCancelled,
+              isConfirmed && styles.statusTextConfirmed,
+              isCompleted && styles.statusTextCompleted,
             ]}
           >
             {getStatusLabel(appointment.status)}
@@ -455,14 +730,29 @@ function AppointmentCard({
       </View>
 
       <View style={styles.detailGrid}>
-        <DetailLine label="Service" value={appointment.serviceType} />
-        <DetailLine label="Atelier" value={appointment.workshop} />
-        <DetailLine label="Date" value={appointment.requestedDate} />
-        <DetailLine label="Heure" value={appointment.requestedTime} />
-        <DetailLine label="Commentaire" value={appointment.comment} />
+        <DetailLine
+          label="Service"
+          value={appointment.serviceType || 'Service non renseigné'}
+        />
+        <DetailLine
+          label="Atelier"
+          value={appointment.workshop || 'Atelier non renseigné'}
+        />
+        <DetailLine
+          label="Date"
+          value={appointment.requestedDate || 'Date non renseignée'}
+        />
+        <DetailLine
+          label="Heure"
+          value={appointment.requestedTime || 'Heure non renseignée'}
+        />
+        <DetailLine
+          label="Commentaire"
+          value={appointment.comment || 'Aucun commentaire'}
+        />
       </View>
 
-      {isPending ? (
+      {canCancel ? (
         <Pressable
           accessibilityRole="button"
           disabled={isCancelling}
@@ -497,198 +787,25 @@ function DetailLine({ label, value }: DetailLineProps) {
   );
 }
 
+type EmptyPanelProps = {
+  title: string;
+  text: string;
+};
+
+function EmptyPanel({ title, text }: EmptyPanelProps) {
+  return (
+    <View style={styles.emptyPanel}>
+      <Text style={styles.emptyTitle}>{title}</Text>
+      <Text style={styles.emptyText}>{text}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  page: {
+  stateContainer: {
     flex: 1,
-    overflow: 'hidden',
-    backgroundColor: '#F4F7FB',
-    experimental_backgroundImage:
-      'linear-gradient(135deg, #F8FAFC 0%, #EEF3F8 48%, #E7EEF7 100%)',
-  },
-
-  backgroundShape: {
-    position: 'absolute',
-    borderRadius: 999,
-  },
-
-  shapeTop: {
-    width: 520,
-    height: 520,
-    top: -220,
-    right: -140,
-    backgroundColor: '#D6E2F2',
-    opacity: 0.72,
-  },
-
-  shapeBottom: {
-    width: 620,
-    height: 620,
-    left: -260,
-    bottom: -300,
-    backgroundColor: '#E3E8F0',
-    opacity: 0.86,
-  },
-
-  shell: {
-    flex: 1,
-    flexDirection: 'row',
+    justifyContent: 'center',
     padding: spacing.lg,
-    gap: spacing.lg,
-  },
-
-  shellCompact: {
-    flexDirection: 'column',
-  },
-
-  sidebar: {
-    width: 280,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(130, 145, 166, 0.26)',
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.88)',
-    gap: spacing.lg,
-    shadowColor: '#071832',
-    shadowOffset: {
-      width: 0,
-      height: 18,
-    },
-    shadowOpacity: 0.08,
-    shadowRadius: 32,
-  },
-
-  sidebarCompact: {
-    width: '100%',
-  },
-
-  brandBlock: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-
-  brandMark: {
-    width: 42,
-    height: 42,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 14,
-    backgroundColor: '#071832',
-  },
-
-  brandMarkText: {
-    color: '#FFFFFF',
-    fontSize: typography.fontSize.lg,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  brandName: {
-    color: '#071832',
-    fontSize: typography.fontSize.md,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  brandSubname: {
-    color: '#657386',
-    fontSize: typography.fontSize.sm,
-  },
-
-  profileBlock: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    padding: spacing.md,
-    borderRadius: 18,
-    backgroundColor: '#F3F6FA',
-  },
-
-  avatar: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 16,
-    backgroundColor: '#DDE8F6',
-  },
-
-  avatarText: {
-    color: '#0F4C9A',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  profileCopy: {
-    flex: 1,
-  },
-
-  profileLabel: {
-    color: '#657386',
-    fontSize: typography.fontSize.xs,
-  },
-
-  profileName: {
-    color: '#071832',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
-  },
-
-  navList: {
-    gap: spacing.xs,
-  },
-
-  navListCompact: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-
-  navItem: {
-    minHeight: 42,
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: 14,
-  },
-
-  navItemActive: {
-    backgroundColor: '#E7F0FB',
-  },
-
-  navItemHovered: {
-    backgroundColor: '#F1F5FA',
-  },
-
-  navItemText: {
-    color: '#526174',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.medium,
-  },
-
-  navItemTextActive: {
-    color: '#0F4C9A',
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  logoutButton: {
-    minHeight: 42,
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: '#D7DFEA',
-    borderRadius: 14,
-    marginTop: 'auto',
-    backgroundColor: '#FFFFFF',
-  },
-
-  logoutButtonHovered: {
-    borderColor: '#C8D5E6',
-    backgroundColor: '#F8FAFC',
-  },
-
-  logoutButtonText: {
-    color: '#10243F',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
   },
 
   contentScroll: {
@@ -697,6 +814,7 @@ const styles = StyleSheet.create({
 
   content: {
     gap: spacing.lg,
+    padding: spacing.sm,
     paddingBottom: spacing.lg,
   },
 
@@ -808,6 +926,96 @@ const styles = StyleSheet.create({
     lineHeight: typography.lineHeight.sm,
   },
 
+  filtersPanel: {
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(130, 145, 166, 0.24)',
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    gap: spacing.md,
+  },
+
+  tabList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+
+  filterRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+
+  searchField: {
+    flex: 1.15,
+    minWidth: 260,
+    gap: spacing.sm,
+  },
+
+  filterGroup: {
+    flex: 1,
+    minWidth: 240,
+    gap: spacing.sm,
+  },
+
+  filterLabel: {
+    color: '#10243F',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+
+  searchInput: {
+    minHeight: 48,
+    paddingVertical: 12,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: '#D5DFEC',
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    color: '#071832',
+    fontSize: typography.fontSize.md,
+  },
+
+  chipList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+
+  chip: {
+    maxWidth: '100%',
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: '#D7DFEA',
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+  },
+
+  chipActive: {
+    borderColor: '#0F4C9A',
+    backgroundColor: '#EAF2FC',
+  },
+
+  chipHovered: {
+    borderColor: '#B8C9DF',
+    backgroundColor: '#F8FAFC',
+  },
+
+  chipText: {
+    color: '#526174',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+
+  chipTextActive: {
+    color: '#0F4C9A',
+    fontWeight: typography.fontWeight.bold,
+  },
+
   appointmentGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -871,9 +1079,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF8E8',
   },
 
+  statusConfirmed: {
+    borderColor: '#AFCBEA',
+    backgroundColor: '#EEF6FF',
+  },
+
   statusCancelled: {
     borderColor: '#E4B8B8',
     backgroundColor: '#FFF3F3',
+  },
+
+  statusCompleted: {
+    borderColor: '#B7D5C0',
+    backgroundColor: '#F0F9F3',
   },
 
   statusText: {
@@ -886,8 +1104,16 @@ const styles = StyleSheet.create({
     color: '#9A6700',
   },
 
+  statusTextConfirmed: {
+    color: '#0F4C9A',
+  },
+
   statusTextCancelled: {
     color: '#B42318',
+  },
+
+  statusTextCompleted: {
+    color: '#166534',
   },
 
   detailGrid: {

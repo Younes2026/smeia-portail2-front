@@ -26,9 +26,7 @@ function getVehicleLabel(
   }
 
   const model =
-    typeof relation.model === 'string' && relation.model
-      ? relation.model
-      : 'Modèle non renseigné';
+    typeof relation.model === 'string' && relation.model ? relation.model : '';
   const brandRelation = relation.brand_id;
   const brandName =
     isRecord(brandRelation) &&
@@ -37,7 +35,7 @@ function getVehicleLabel(
       ? brandRelation.name
       : '';
 
-  return `${brandName} ${model}`.trim();
+  return `${brandName} ${model}`.trim() || 'Véhicule non renseigné';
 }
 
 function getRegistrationNumber(
@@ -55,13 +53,31 @@ function getRegistrationNumber(
 }
 
 function formatDate(value: string): string {
+  if (!value) {
+    return 'Date non renseignée';
+  }
+
   const date = new Date(`${value}T12:00:00`);
 
   if (Number.isNaN(date.getTime())) {
-    return value;
+    return 'Date non renseignée';
   }
 
   return date.toLocaleDateString('fr-FR');
+}
+
+function formatTime(value: string): string {
+  if (!value) {
+    return 'Heure non renseignée';
+  }
+
+  const [hours, minutes] = value.split(':');
+
+  if (!hours || !minutes) {
+    return value;
+  }
+
+  return `${hours.padStart(2, '0')}:${minutes.padStart(2, '0')}`;
 }
 
 export function mapAppointmentToListItem(
@@ -80,7 +96,9 @@ export function mapAppointmentToListItem(
       'Atelier non renseigné'
     ),
     requestedDate: formatDate(appointment.requested_date),
-    requestedTime: appointment.requested_time,
+    requestedDateValue: appointment.requested_date,
+    requestedTime: formatTime(appointment.requested_time),
+    requestedTimeValue: appointment.requested_time,
     status: appointment.status,
     comment: appointment.comment?.trim() || 'Aucun commentaire',
   };

@@ -62,13 +62,25 @@ export type DirectusRepair = {
 
 export type RepairListItem = {
   id: number;
+  customerId: number | null;
   documentNumber: string;
   customerName: string;
   vehicleLabel: string;
+  vehicleModel: string;
+  registrationNumber: string;
   brandName: string;
   statusName: string;
   serviceTypeName: string;
   workshopName: string;
   entryMileage: string;
   receptionistName: string;
+};
+
+export type RepairDetailItem = RepairListItem & {
+  customerPhone: string;
+  customerEmail: string;
+  hasCustomerInformation: boolean;
+  vehicleVin: string;
+  vehicleYear: string;
+  vehicleMileage: string;
 };
