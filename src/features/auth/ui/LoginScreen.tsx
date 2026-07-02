@@ -1,9 +1,12 @@
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { SymbolView } from 'expo-symbols';
+import { useEffect, useRef, useState } from 'react';
+import type { TextStyle } from 'react-native';
 import {
   Animated,
   Easing,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,8 +24,8 @@ import { typography } from '@/core/theme/typography';
 import { useLogin } from '@/features/auth/hooks/useLogin';
 import { useAuthStore } from '@/store/auth.store';
 
-const LOGO_TILE_WIDTH = 86;
-const LOGO_TILE_GAP = 10;
+const LOGO_TILE_WIDTH = 64;
+const LOGO_TILE_GAP = 8;
 
 const brandLogos = [
   {
@@ -51,9 +54,26 @@ const brandLogos = [
   },
 ] as const;
 
+const scrollingBrandLogos = [...brandLogos, ...brandLogos];
 const LOGO_LOOP_DISTANCE = brandLogos.length * (LOGO_TILE_WIDTH + LOGO_TILE_GAP);
 
 type FocusedField = 'email' | 'password' | null;
+type WebTextInputFocusReset = Omit<TextStyle, 'boxShadow' | 'outlineStyle'> & {
+  boxShadow: 'none';
+  outlineStyle: 'none';
+  outlineWidth: 0;
+};
+
+const webTextInputFocusReset: WebTextInputFocusReset = {
+  boxShadow: 'none',
+  outlineStyle: 'none',
+  outlineWidth: 0,
+};
+
+const textInputFocusReset = Platform.select<TextStyle | undefined>({
+  web: webTextInputFocusReset as unknown as TextStyle,
+  default: undefined,
+});
 
 export function LoginScreen() {
   const { width } = useWindowDimensions();
@@ -65,14 +85,12 @@ export function LoginScreen() {
   const login = useLogin();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
+  const [showForgotPasswordHelp, setShowForgotPasswordHelp] = useState(false);
   const [focusedField, setFocusedField] = useState<FocusedField>(null);
   const marqueeProgress = useRef(new Animated.Value(0)).current;
   const blobProgress = useRef(new Animated.Value(0)).current;
   const secondaryBlobProgress = useRef(new Animated.Value(0)).current;
-  const carouselLogos = useMemo(
-    () => [...brandLogos, ...brandLogos],
-    []
-  );
   const canSubmit =
     email.trim().length > 0 && password.length > 0 && !login.isPending;
   const hasProtectedSession = Boolean(accessToken && customer);
@@ -82,28 +100,6 @@ export function LoginScreen() {
   });
 
   useEffect(() => {
-    marqueeProgress.setValue(0);
-
-    const marqueeAnimation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(marqueeProgress, {
-          toValue: 1,
-          duration: 28000,
-          easing: Easing.linear,
-          useNativeDriver: false,
-        }),
-        Animated.timing(marqueeProgress, {
-          toValue: 0,
-          duration: 0,
-          easing: Easing.linear,
-          useNativeDriver: false,
-        }),
-      ]),
-      {
-        iterations: -1,
-        resetBeforeIteration: false,
-      }
-    );
     const blobAnimation = Animated.loop(
       Animated.sequence([
         Animated.timing(blobProgress, {
@@ -137,16 +133,45 @@ export function LoginScreen() {
       ])
     );
 
-    marqueeAnimation.start();
     blobAnimation.start();
     secondaryBlobAnimation.start();
 
     return () => {
-      marqueeAnimation.stop();
       blobAnimation.stop();
       secondaryBlobAnimation.stop();
     };
-  }, [blobProgress, marqueeProgress, secondaryBlobProgress]);
+  }, [blobProgress, secondaryBlobProgress]);
+
+  useEffect(() => {
+    marqueeProgress.setValue(0);
+
+    const marqueeAnimation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(marqueeProgress, {
+          toValue: 1,
+          duration: 26000,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+        Animated.timing(marqueeProgress, {
+          toValue: 0,
+          duration: 0,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+      ]),
+      {
+        iterations: -1,
+        resetBeforeIteration: false,
+      }
+    );
+
+    marqueeAnimation.start();
+
+    return () => {
+      marqueeAnimation.stop();
+    };
+  }, [marqueeProgress]);
 
   useEffect(() => {
     if (!hasHydrated || !hasProtectedSession || login.isPending) {
@@ -227,6 +252,7 @@ export function LoginScreen() {
 
         <ScrollView
           keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
           style={styles.scrollView}
           contentContainerStyle={[
             styles.scrollContent,
@@ -237,37 +263,48 @@ export function LoginScreen() {
             <View pointerEvents="none" style={styles.cardAura} />
 
             <View style={[styles.panel, isCompact && styles.panelCompact]}>
-              <View style={styles.logoViewport}>
-                <Animated.View
-                  style={[
-                    styles.logoTrack,
-                    {
-                      transform: [
-                        {
-                          translateX: logoTranslateX,
-                        },
-                      ],
-                    },
-                  ]}
-                >
-                  {carouselLogos.map((logo, index) => (
-                    <View
-                      key={`${logo.name}-${index}`}
-                      style={styles.logoCapsule}
-                    >
-                      <Image
-                        accessibilityLabel={logo.name}
-                        contentFit="contain"
-                        source={logo.source}
-                        style={styles.logoImage}
-                      />
-                    </View>
-                  ))}
-                </Animated.View>
+              <View style={styles.logoPanel}>
+                <View style={styles.brandBlock}>
+                  <View style={styles.brandMark}>
+                    <Text style={styles.brandMarkText}>S</Text>
+                  </View>
+                  <View style={styles.brandCopy}>
+                    <Text style={styles.brandName}>SMEIA</Text>
+                    <Text style={styles.brandSubname}>Portail client</Text>
+                  </View>
+                </View>
+
+                <View style={styles.logoViewport}>
+                  <Animated.View
+                    style={[
+                      styles.logoTrack,
+                      {
+                        transform: [
+                          {
+                            translateX: logoTranslateX,
+                          },
+                        ],
+                      },
+                    ]}
+                  >
+                    {scrollingBrandLogos.map((logo, index) => (
+                      <View
+                        key={`${logo.name}-${index}`}
+                        style={styles.logoCapsule}
+                      >
+                        <Image
+                          accessibilityLabel={logo.name}
+                          contentFit="contain"
+                          source={logo.source}
+                          style={styles.logoImage}
+                        />
+                      </View>
+                    ))}
+                  </Animated.View>
+                </View>
               </View>
 
               <View style={styles.header}>
-                <Text style={styles.eyebrow}>SMEIA-PORTAIL2</Text>
                 <Text style={styles.title}>Connexion client</Text>
                 <Text style={styles.subtitle}>
                   Accédez au suivi de vos véhicules et réparations.
@@ -291,6 +328,7 @@ export function LoginScreen() {
                     placeholderTextColor={colors.light.text.muted}
                     style={[
                       styles.input,
+                      textInputFocusReset,
                       focusedField === 'email' && styles.inputFocused,
                     ]}
                     value={email}
@@ -299,27 +337,63 @@ export function LoginScreen() {
 
                 <View style={styles.field}>
                   <Text style={styles.label}>Mot de passe</Text>
-                  <TextInput
-                    onChangeText={setPassword}
-                    onBlur={() => {
-                      setFocusedField(null);
-                    }}
-                    onFocus={() => {
-                      setFocusedField('password');
-                    }}
-                    placeholder="Mot de passe"
-                    placeholderTextColor={colors.light.text.muted}
-                    secureTextEntry
+                  <View
                     style={[
-                      styles.input,
+                      styles.passwordInputShell,
                       focusedField === 'password' && styles.inputFocused,
                     ]}
-                    value={password}
-                  />
+                  >
+                    <TextInput
+                      onChangeText={setPassword}
+                      onBlur={() => {
+                        setFocusedField(null);
+                      }}
+                      onFocus={() => {
+                        setFocusedField('password');
+                      }}
+                      placeholder="Mot de passe"
+                      placeholderTextColor={colors.light.text.muted}
+                      secureTextEntry={!isPasswordVisible}
+                      style={[styles.passwordInput, textInputFocusReset]}
+                      value={password}
+                    />
+                    <Pressable
+                      accessibilityLabel={
+                        isPasswordVisible
+                          ? 'Cacher le mot de passe'
+                          : 'Afficher le mot de passe'
+                      }
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setIsPasswordVisible((visible) => !visible);
+                      }}
+                      style={({ hovered, pressed }) => [
+                        styles.passwordToggle,
+                        hovered && styles.passwordToggleHovered,
+                        pressed && styles.passwordTogglePressed,
+                      ]}
+                    >
+                      <SymbolView
+                        name={{
+                          ios: isPasswordVisible ? 'eye.slash' : 'eye',
+                          android: isPasswordVisible
+                            ? 'visibility_off'
+                            : 'visibility',
+                          web: isPasswordVisible
+                            ? 'visibility_off'
+                            : 'visibility',
+                        }}
+                        size={18}
+                        tintColor="#526174"
+                      />
+                    </Pressable>
+                  </View>
                 </View>
 
                 {login.errorMessage ? (
-                  <Text style={styles.errorText}>{login.errorMessage}</Text>
+                  <View accessibilityRole="alert" style={styles.errorBox}>
+                    <Text style={styles.errorText}>{login.errorMessage}</Text>
+                  </View>
                 ) : null}
 
                 <Pressable
@@ -337,6 +411,36 @@ export function LoginScreen() {
                     {login.isPending ? 'Connexion...' : 'Se connecter'}
                   </Text>
                 </Pressable>
+
+                <View style={styles.forgotPasswordBlock}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setShowForgotPasswordHelp(true);
+                    }}
+                    style={({ hovered, pressed }) => [
+                      styles.forgotPasswordLink,
+                      hovered && styles.forgotPasswordLinkHovered,
+                      pressed && styles.buttonPressed,
+                    ]}
+                  >
+                    <Text style={styles.forgotPasswordText}>
+                      Mot de passe oublié ?
+                    </Text>
+                  </Pressable>
+
+                  {showForgotPasswordHelp ? (
+                    <View style={styles.forgotPasswordHelp}>
+                      <Text style={styles.forgotPasswordHelpText}>
+                        Veuillez contacter le service client SMEIA.
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <Text style={styles.footerText}>
+                  © 2026 SMEIA - Portail Client
+                </Text>
               </View>
             </View>
           </View>
@@ -349,6 +453,7 @@ export function LoginScreen() {
 const styles = StyleSheet.create({
   background: {
     flex: 1,
+    minHeight: '100%',
     overflow: 'hidden',
     backgroundColor: '#F4F7FB',
     experimental_backgroundImage:
@@ -405,13 +510,15 @@ const styles = StyleSheet.create({
 
   scrollContent: {
     flexGrow: 1,
+    minHeight: '100%',
     justifyContent: 'center',
-    padding: spacing.xl,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.lg,
   },
 
   scrollContentCompact: {
-    justifyContent: 'flex-start',
-    padding: spacing.lg,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
   },
 
   cardShell: {
@@ -444,12 +551,12 @@ const styles = StyleSheet.create({
 
   panel: {
     width: '100%',
-    padding: spacing.xl,
+    padding: 20,
     borderWidth: 1,
     borderColor: 'rgba(130, 145, 166, 0.32)',
     borderRadius: 24,
     backgroundColor: 'rgba(255, 255, 255, 0.88)',
-    gap: spacing.xl,
+    gap: spacing.md,
     shadowColor: '#071832',
     shadowOffset: {
       width: 0,
@@ -461,17 +568,60 @@ const styles = StyleSheet.create({
   },
 
   panelCompact: {
-    padding: spacing.lg,
+    padding: 14,
     borderRadius: 20,
   },
 
-  logoViewport: {
-    height: 64,
-    overflow: 'hidden',
-    justifyContent: 'center',
+  logoPanel: {
+    alignItems: 'center',
+    gap: spacing.md,
     paddingBottom: spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(120, 137, 162, 0.24)',
+  },
+
+  brandBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+
+  brandMark: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 14,
+    backgroundColor: '#071832',
+  },
+
+  brandMarkText: {
+    color: '#FFFFFF',
+    fontSize: typography.fontSize.lg,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  brandCopy: {
+    minWidth: 0,
+  },
+
+  brandName: {
+    color: '#071832',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  brandSubname: {
+    color: '#657386',
+    fontSize: typography.fontSize.sm,
+  },
+
+  logoViewport: {
+    width: '100%',
+    maxWidth: 424,
+    height: 48,
+    overflow: 'hidden',
+    justifyContent: 'center',
   },
 
   logoTrack: {
@@ -481,43 +631,37 @@ const styles = StyleSheet.create({
 
   logoCapsule: {
     width: LOGO_TILE_WIDTH,
-    height: 46,
+    height: 38,
     alignItems: 'center',
     justifyContent: 'center',
     padding: spacing.xs,
     borderWidth: 1,
-    borderColor: 'rgba(210, 219, 232, 0.96)',
-    borderRadius: 999,
+    borderColor: '#E0E7F0',
+    borderRadius: 14,
     marginRight: LOGO_TILE_GAP,
-    backgroundColor: 'rgba(255, 255, 255, 0.96)',
+    backgroundColor: '#FFFFFF',
     shadowColor: '#10243F',
     shadowOffset: {
       width: 0,
-      height: 8,
+      height: 6,
     },
-    shadowOpacity: 0.08,
-    shadowRadius: 18,
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
   },
 
   logoImage: {
-    width: '100%',
-    height: '100%',
+    width: '92%',
+    height: '82%',
   },
 
   header: {
-    gap: spacing.sm,
+    gap: spacing.xs,
     alignItems: 'center',
   },
 
-  eyebrow: {
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
-    color: '#1E5AA8',
-    letterSpacing: 0,
-  },
-
   title: {
-    fontSize: typography.fontSize.xxl,
+    fontSize: 28,
+    lineHeight: 34,
     fontWeight: typography.fontWeight.bold,
     color: '#071832',
     textAlign: 'center',
@@ -525,17 +669,17 @@ const styles = StyleSheet.create({
 
   subtitle: {
     fontSize: typography.fontSize.md,
-    lineHeight: typography.lineHeight.md,
+    lineHeight: 22,
     color: '#526174',
     textAlign: 'center',
   },
 
   form: {
-    gap: spacing.md,
+    gap: 14,
   },
 
   field: {
-    gap: spacing.sm,
+    gap: spacing.xs,
   },
 
   label: {
@@ -545,8 +689,8 @@ const styles = StyleSheet.create({
   },
 
   input: {
-    minHeight: 52,
-    paddingVertical: 14,
+    minHeight: 50,
+    paddingVertical: 13,
     paddingHorizontal: spacing.md,
     borderWidth: 1,
     borderColor: '#D5DFEC',
@@ -567,14 +711,61 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
   },
 
+  passwordInputShell: {
+    minHeight: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: 0,
+    paddingLeft: spacing.md,
+    paddingRight: spacing.sm,
+    borderWidth: 1,
+    borderColor: '#D5DFEC',
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.94)',
+  },
+
+  passwordInput: {
+    flex: 1,
+    minHeight: 48,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    color: '#071832',
+    fontSize: typography.fontSize.md,
+  },
+
+  passwordToggle: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+  },
+
+  passwordToggleHovered: {
+    backgroundColor: '#EEF4FB',
+  },
+
+  passwordTogglePressed: {
+    opacity: 0.72,
+  },
+
+  errorBox: {
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E9B8B8',
+    borderRadius: 14,
+    backgroundColor: '#FFF5F5',
+  },
+
   errorText: {
     fontSize: typography.fontSize.sm,
     lineHeight: typography.lineHeight.sm,
-    color: '#B42318',
+    color: '#8F2D24',
   },
 
   button: {
-    minHeight: 52,
+    minHeight: 50,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 12,
@@ -608,5 +799,51 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
     color: '#FFFFFF',
+  },
+
+  forgotPasswordBlock: {
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+
+  forgotPasswordLink: {
+    minHeight: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.sm,
+    borderRadius: 8,
+  },
+
+  forgotPasswordLinkHovered: {
+    backgroundColor: '#EEF4FB',
+  },
+
+  forgotPasswordText: {
+    color: '#0F4C9A',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+
+  forgotPasswordHelp: {
+    width: '100%',
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#C9D8EA',
+    borderRadius: 14,
+    backgroundColor: '#F3F7FC',
+  },
+
+  forgotPasswordHelpText: {
+    color: '#526174',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+    textAlign: 'center',
+  },
+
+  footerText: {
+    color: '#7A8798',
+    fontSize: typography.fontSize.xs,
+    lineHeight: typography.lineHeight.xs,
+    textAlign: 'center',
   },
 });
