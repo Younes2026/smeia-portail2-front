@@ -1,11 +1,10 @@
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
-import { useEffect, useRef, useState } from 'react';
-import type { TextStyle } from 'react-native';
+import type { ComponentProps } from 'react';
+import { useEffect, useState } from 'react';
+import type { TextStyle, ViewStyle } from 'react-native';
 import {
-  Animated,
-  Easing,
   Platform,
   Pressable,
   ScrollView,
@@ -24,8 +23,7 @@ import { typography } from '@/core/theme/typography';
 import { useLogin } from '@/features/auth/hooks/useLogin';
 import { useAuthStore } from '@/store/auth.store';
 
-const LOGO_TILE_WIDTH = 64;
-const LOGO_TILE_GAP = 8;
+type SymbolName = ComponentProps<typeof SymbolView>['name'];
 
 const brandLogos = [
   {
@@ -54,14 +52,74 @@ const brandLogos = [
   },
 ] as const;
 
-const scrollingBrandLogos = [...brandLogos, ...brandLogos];
-const LOGO_LOOP_DISTANCE = brandLogos.length * (LOGO_TILE_WIDTH + LOGO_TILE_GAP);
+const brandBackgrounds = [
+  {
+    name: 'BMW',
+    source: require('@/assets/login/brands/bmw-bg.png'),
+  },
+  {
+    name: 'MINI',
+    source: require('@/assets/login/brands/mini-bg.png'),
+  },
+  {
+    name: 'Jaguar',
+    source: require('@/assets/login/brands/jaguar-bg.png'),
+  },
+  {
+    name: 'Land Rover',
+    source: require('@/assets/login/brands/land-rover-bg.png'),
+  },
+  {
+    name: 'Mazda',
+    source: require('@/assets/login/brands/mazda-bg.png'),
+  },
+  {
+    name: 'Jetour',
+    source: require('@/assets/login/brands/jetour-bg.png'),
+  },
+] as const;
+
+const premiumInfoItems: ReadonlyArray<{
+  icon: SymbolName;
+  title: string;
+  subtitle: string;
+}> = [
+  {
+    icon: { ios: 'clock', android: 'schedule', web: 'schedule' },
+    title: 'Suivi en temps réel',
+    subtitle: 'Vos véhicules et réparations',
+  },
+  {
+    icon: { ios: 'shield', android: 'shield', web: 'shield' },
+    title: 'Historique sécurisé',
+    subtitle: 'Toutes vos interventions',
+  },
+  {
+    icon: { ios: 'car', android: 'directions_car', web: 'directions_car' },
+    title: 'Accès multi-marques',
+    subtitle: 'BMW, MINI, Jaguar, Land Rover, Mazda, Jetour',
+  },
+  {
+    icon: { ios: 'star', android: 'star', web: 'star' },
+    title: 'Service premium',
+    subtitle: 'Un accompagnement dédié',
+  },
+];
 
 type FocusedField = 'email' | 'password' | null;
 type WebTextInputFocusReset = Omit<TextStyle, 'boxShadow' | 'outlineStyle'> & {
   boxShadow: 'none';
   outlineStyle: 'none';
   outlineWidth: 0;
+};
+type WebGlassPanelStyle = ViewStyle & {
+  WebkitBackdropFilter: string;
+  backdropFilter: string;
+};
+type WebViewportStyle = {
+  height: '100dvh';
+  minHeight: '100dvh';
+  maxHeight: '100dvh';
 };
 
 const webTextInputFocusReset: WebTextInputFocusReset = {
@@ -72,6 +130,27 @@ const webTextInputFocusReset: WebTextInputFocusReset = {
 
 const textInputFocusReset = Platform.select<TextStyle | undefined>({
   web: webTextInputFocusReset as unknown as TextStyle,
+  default: undefined,
+});
+
+const webGlassPanelStyle: WebGlassPanelStyle = {
+  WebkitBackdropFilter: 'blur(22px)',
+  backdropFilter: 'blur(22px)',
+};
+
+const glassPanelStyle = Platform.select<ViewStyle | undefined>({
+  web: webGlassPanelStyle as unknown as ViewStyle,
+  default: undefined,
+});
+
+const webViewportStyle: WebViewportStyle = {
+  height: '100dvh',
+  minHeight: '100dvh',
+  maxHeight: '100dvh',
+};
+
+const viewportStyle = Platform.select<ViewStyle | undefined>({
+  web: webViewportStyle as unknown as ViewStyle,
   default: undefined,
 });
 
@@ -88,90 +167,17 @@ export function LoginScreen() {
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [showForgotPasswordHelp, setShowForgotPasswordHelp] = useState(false);
   const [focusedField, setFocusedField] = useState<FocusedField>(null);
-  const marqueeProgress = useRef(new Animated.Value(0)).current;
-  const blobProgress = useRef(new Animated.Value(0)).current;
-  const secondaryBlobProgress = useRef(new Animated.Value(0)).current;
   const canSubmit =
     email.trim().length > 0 && password.length > 0 && !login.isPending;
   const hasProtectedSession = Boolean(accessToken && customer);
-  const logoTranslateX = marqueeProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, -LOGO_LOOP_DISTANCE],
-  });
-
-  useEffect(() => {
-    const blobAnimation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(blobProgress, {
-          toValue: 1,
-          duration: 7000,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(blobProgress, {
-          toValue: 0,
-          duration: 7000,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    const secondaryBlobAnimation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(secondaryBlobProgress, {
-          toValue: 1,
-          duration: 9000,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(secondaryBlobProgress, {
-          toValue: 0,
-          duration: 9000,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ])
-    );
-
-    blobAnimation.start();
-    secondaryBlobAnimation.start();
-
-    return () => {
-      blobAnimation.stop();
-      secondaryBlobAnimation.stop();
-    };
-  }, [blobProgress, secondaryBlobProgress]);
-
-  useEffect(() => {
-    marqueeProgress.setValue(0);
-
-    const marqueeAnimation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(marqueeProgress, {
-          toValue: 1,
-          duration: 26000,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        }),
-        Animated.timing(marqueeProgress, {
-          toValue: 0,
-          duration: 0,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        }),
-      ]),
-      {
-        iterations: -1,
-        resetBeforeIteration: false,
-      }
-    );
-
-    marqueeAnimation.start();
-
-    return () => {
-      marqueeAnimation.stop();
-    };
-  }, [marqueeProgress]);
+  const panelTiltStyles = [
+    styles.galleryPanelTiltOne,
+    styles.galleryPanelTiltTwo,
+    styles.galleryPanelTiltThree,
+    styles.galleryPanelTiltFour,
+    styles.galleryPanelTiltFive,
+    styles.galleryPanelTiltSix,
+  ];
 
   useEffect(() => {
     if (!hasHydrated || !hasProtectedSession || login.isPending) {
@@ -194,61 +200,36 @@ export function LoginScreen() {
 
   return (
     <PageContainer padded={false}>
-      <View style={styles.background}>
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.softShape,
-            styles.softShapeTop,
-            {
-              transform: [
-                {
-                  translateY: blobProgress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, 24],
-                  }),
-                },
-                {
-                  translateX: blobProgress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, -18],
-                  }),
-                },
-              ],
-            },
-          ]}
-        />
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.softShape,
-            styles.softShapeBottom,
-            {
-              transform: [
-                {
-                  translateY: secondaryBlobProgress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, -20],
-                  }),
-                },
-                {
-                  translateX: secondaryBlobProgress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, 24],
-                  }),
-                },
-              ],
-            },
-          ]}
-        />
-        <View
-          pointerEvents="none"
-          style={[styles.accentLine, styles.accentLineTop]}
-        />
-        <View
-          pointerEvents="none"
-          style={[styles.accentLine, styles.accentLineBottom]}
-        />
+      <View style={[styles.background, viewportStyle]}>
+        <View pointerEvents="none" style={styles.backgroundScene}>
+          <View
+            style={[
+              styles.galleryTrack,
+              isCompact && styles.galleryTrackCompact,
+            ]}
+          >
+            {brandBackgrounds.map((brand, index) => (
+              <View
+                key={brand.name}
+                style={[
+                  styles.galleryPanel,
+                  !isCompact && panelTiltStyles[index],
+                  isCompact && styles.galleryPanelCompact,
+                ]}
+              >
+                <Image
+                  accessibilityLabel={brand.name}
+                  contentFit="cover"
+                  source={brand.source}
+                  style={styles.galleryImage}
+                />
+                <View style={styles.galleryPanelShade} />
+              </View>
+            ))}
+          </View>
+          <View style={styles.backgroundBlueWash} />
+          <View style={styles.backgroundOverlay} />
+        </View>
 
         <ScrollView
           keyboardShouldPersistTaps="handled"
@@ -259,50 +240,46 @@ export function LoginScreen() {
             isCompact && styles.scrollContentCompact,
           ]}
         >
+          <View style={[styles.logoBar, isCompact && styles.logoBarCompact]}>
+            {brandLogos.map((logo) => (
+              <View
+                key={logo.name}
+                style={[
+                  styles.logoBarTile,
+                  isCompact && styles.logoBarTileCompact,
+                ]}
+              >
+                <Image
+                  accessibilityLabel={logo.name}
+                  contentFit="contain"
+                  source={logo.source}
+                  style={styles.logoBarImage}
+                />
+              </View>
+            ))}
+          </View>
+
           <View style={[styles.cardShell, isCompact && styles.cardShellCompact]}>
-            <View pointerEvents="none" style={styles.cardAura} />
+            <View
+              style={[
+                styles.panel,
+                glassPanelStyle,
+                isCompact && styles.panelCompact,
+              ]}
+            >
+              <View pointerEvents="none" style={styles.cardGlassSurface} />
 
-            <View style={[styles.panel, isCompact && styles.panelCompact]}>
-              <View style={styles.logoPanel}>
-                <View style={styles.brandBlock}>
-                  <View style={styles.brandMark}>
-                    <Text style={styles.brandMarkText}>S</Text>
-                  </View>
-                  <View style={styles.brandCopy}>
-                    <Text style={styles.brandName}>SMEIA</Text>
-                    <Text style={styles.brandSubname}>Portail client</Text>
-                  </View>
+              <View style={styles.brandBlock}>
+                <View style={styles.brandMark}>
+                  <Text style={styles.brandMarkText}>S</Text>
                 </View>
-
-                <View style={styles.logoViewport}>
-                  <Animated.View
-                    style={[
-                      styles.logoTrack,
-                      {
-                        transform: [
-                          {
-                            translateX: logoTranslateX,
-                          },
-                        ],
-                      },
-                    ]}
-                  >
-                    {scrollingBrandLogos.map((logo, index) => (
-                      <View
-                        key={`${logo.name}-${index}`}
-                        style={styles.logoCapsule}
-                      >
-                        <Image
-                          accessibilityLabel={logo.name}
-                          contentFit="contain"
-                          source={logo.source}
-                          style={styles.logoImage}
-                        />
-                      </View>
-                    ))}
-                  </Animated.View>
+                <View style={styles.brandCopy}>
+                  <Text style={styles.brandName}>SMEIA</Text>
+                  <Text style={styles.brandSubname}>Portail client</Text>
                 </View>
               </View>
+
+              <View pointerEvents="none" style={styles.cardAccent} />
 
               <View style={styles.header}>
                 <Text style={styles.title}>Connexion client</Text>
@@ -314,47 +291,60 @@ export function LoginScreen() {
               <View style={styles.form}>
                 <View style={styles.field}>
                   <Text style={styles.label}>Email</Text>
-                  <TextInput
-                    autoCapitalize="none"
-                    keyboardType="email-address"
-                    onChangeText={setEmail}
-                    onBlur={() => {
-                      setFocusedField(null);
-                    }}
-                    onFocus={() => {
-                      setFocusedField('email');
-                    }}
-                    placeholder="email@exemple.com"
-                    placeholderTextColor={colors.light.text.muted}
+                  <View
                     style={[
-                      styles.input,
-                      textInputFocusReset,
+                      styles.inputShell,
                       focusedField === 'email' && styles.inputFocused,
                     ]}
-                    value={email}
-                  />
+                  >
+                    <SymbolView
+                      name={{ ios: 'envelope', android: 'mail', web: 'mail' }}
+                      size={17}
+                      tintColor="#5E7088"
+                    />
+                    <TextInput
+                      autoCapitalize="none"
+                      keyboardType="email-address"
+                      onBlur={() => {
+                        setFocusedField(null);
+                      }}
+                      onChangeText={setEmail}
+                      onFocus={() => {
+                        setFocusedField('email');
+                      }}
+                      placeholder="email@exemple.com"
+                      placeholderTextColor={colors.light.text.secondary}
+                      style={[styles.input, textInputFocusReset]}
+                      value={email}
+                    />
+                  </View>
                 </View>
 
                 <View style={styles.field}>
                   <Text style={styles.label}>Mot de passe</Text>
                   <View
                     style={[
-                      styles.passwordInputShell,
+                      styles.inputShell,
                       focusedField === 'password' && styles.inputFocused,
                     ]}
                   >
+                    <SymbolView
+                      name={{ ios: 'lock.fill', android: 'lock', web: 'lock' }}
+                      size={17}
+                      tintColor="#5E7088"
+                    />
                     <TextInput
-                      onChangeText={setPassword}
                       onBlur={() => {
                         setFocusedField(null);
                       }}
+                      onChangeText={setPassword}
                       onFocus={() => {
                         setFocusedField('password');
                       }}
                       placeholder="Mot de passe"
-                      placeholderTextColor={colors.light.text.muted}
+                      placeholderTextColor={colors.light.text.secondary}
                       secureTextEntry={!isPasswordVisible}
-                      style={[styles.passwordInput, textInputFocusReset]}
+                      style={[styles.input, textInputFocusReset]}
                       value={password}
                     />
                     <Pressable
@@ -384,7 +374,7 @@ export function LoginScreen() {
                             : 'visibility',
                         }}
                         size={18}
-                        tintColor="#526174"
+                        tintColor="#4D6078"
                       />
                     </Pressable>
                   </View>
@@ -444,6 +434,24 @@ export function LoginScreen() {
               </View>
             </View>
           </View>
+
+          <View style={[styles.infoStrip, isCompact && styles.infoStripCompact]}>
+            {premiumInfoItems.map((item) => (
+              <View key={item.title} style={styles.infoItem}>
+                <View style={styles.infoIcon}>
+                  <SymbolView
+                    name={item.icon}
+                    size={16}
+                    tintColor="#D9E8FF"
+                  />
+                </View>
+                <View style={styles.infoCopy}>
+                  <Text style={styles.infoTitle}>{item.title}</Text>
+                  <Text style={styles.infoSubtitle}>{item.subtitle}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
         </ScrollView>
       </View>
     </PageContainer>
@@ -455,53 +463,107 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: '100%',
     overflow: 'hidden',
-    backgroundColor: '#F4F7FB',
+    backgroundColor: '#06111F',
+  },
+
+  backgroundScene: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    overflow: 'hidden',
+  },
+
+  galleryTrack: {
+    position: 'absolute',
+    top: -28,
+    right: -46,
+    bottom: -28,
+    left: -46,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+
+  galleryTrackCompact: {
+    top: 0,
+    right: -180,
+    bottom: 0,
+    left: -180,
+    opacity: 0.72,
+  },
+
+  galleryPanel: {
+    flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
+    marginHorizontal: -8,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: 'rgba(194, 215, 246, 0.24)',
+    backgroundColor: '#0A1728',
+  },
+
+  galleryPanelCompact: {
+    marginHorizontal: -16,
+  },
+
+  galleryPanelTiltOne: {
+    transform: [{ rotateZ: '-5deg' }, { scale: 1.08 }],
+  },
+
+  galleryPanelTiltTwo: {
+    transform: [{ rotateZ: '3deg' }, { scale: 1.08 }],
+  },
+
+  galleryPanelTiltThree: {
+    transform: [{ rotateZ: '-2deg' }, { scale: 1.08 }],
+  },
+
+  galleryPanelTiltFour: {
+    transform: [{ rotateZ: '4deg' }, { scale: 1.08 }],
+  },
+
+  galleryPanelTiltFive: {
+    transform: [{ rotateZ: '-3deg' }, { scale: 1.08 }],
+  },
+
+  galleryPanelTiltSix: {
+    transform: [{ rotateZ: '5deg' }, { scale: 1.08 }],
+  },
+
+  galleryImage: {
+    width: '100%',
+    height: '100%',
+  },
+
+  galleryPanelShade: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(1, 10, 24, 0.18)',
+  },
+
+  backgroundBlueWash: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(5, 18, 38, 0.24)',
+  },
+
+  backgroundOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(4, 12, 24, 0.18)',
     experimental_backgroundImage:
-      'linear-gradient(135deg, #F8FAFC 0%, #EEF3F8 46%, #E8EEF7 100%)',
-  },
-
-  softShape: {
-    position: 'absolute',
-    borderRadius: 999,
-  },
-
-  softShapeTop: {
-    width: 460,
-    height: 460,
-    top: -190,
-    right: -130,
-    backgroundColor: '#C9D7EA',
-    opacity: 0.52,
-  },
-
-  softShapeBottom: {
-    width: 560,
-    height: 560,
-    bottom: -280,
-    left: -210,
-    backgroundColor: '#D7DEE9',
-    opacity: 0.64,
-  },
-
-  accentLine: {
-    position: 'absolute',
-    height: 1,
-    backgroundColor: '#7898C9',
-    transform: [{ rotateZ: '-18deg' }],
-  },
-
-  accentLineTop: {
-    width: 420,
-    top: 118,
-    right: -80,
-    opacity: 0.32,
-  },
-
-  accentLineBottom: {
-    width: 340,
-    right: 96,
-    bottom: 96,
-    opacity: 0.42,
+      'linear-gradient(180deg, rgba(5, 16, 34, 0.22) 0%, rgba(5, 13, 26, 0.58) 58%, rgba(3, 10, 20, 0.92) 100%)',
   },
 
   scrollView: {
@@ -510,94 +572,160 @@ const styles = StyleSheet.create({
 
   scrollContent: {
     flexGrow: 1,
+    width: '100%',
     minHeight: '100%',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 16,
   },
 
   scrollContentCompact: {
+    justifyContent: 'center',
+    gap: spacing.sm,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
   },
 
+  logoBar: {
+    maxWidth: 620,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    padding: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+    borderRadius: 16,
+    backgroundColor: 'rgba(226, 238, 255, 0.16)',
+    shadowColor: '#020814',
+    shadowOffset: {
+      width: 0,
+      height: 12,
+    },
+    shadowOpacity: 0.18,
+    shadowRadius: 28,
+  },
+
+  logoBarCompact: {
+    width: '100%',
+    maxWidth: 360,
+    gap: 5,
+    padding: 6,
+    borderRadius: 16,
+  },
+
+  logoBarTile: {
+    width: 72,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.13)',
+  },
+
+  logoBarTileCompact: {
+    width: 44,
+    height: 30,
+    borderRadius: 10,
+  },
+
+  logoBarImage: {
+    width: '90%',
+    height: '82%',
+  },
+
   cardShell: {
     width: '100%',
-    maxWidth: 540,
+    maxWidth: 372,
     alignSelf: 'center',
   },
 
   cardShellCompact: {
-    maxWidth: 520,
-  },
-
-  cardAura: {
-    position: 'absolute',
-    width: '86%',
-    height: 160,
-    top: 52,
-    alignSelf: 'center',
-    borderRadius: 999,
-    backgroundColor: '#8FB7E8',
-    opacity: 0.22,
-    shadowColor: '#2563EB',
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
-    shadowOpacity: 0.28,
-    shadowRadius: 80,
+    maxWidth: 420,
   },
 
   panel: {
     width: '100%',
-    padding: 20,
+    padding: 18,
     borderWidth: 1,
-    borderColor: 'rgba(130, 145, 166, 0.32)',
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.88)',
-    gap: spacing.md,
-    shadowColor: '#071832',
+    borderColor: 'rgba(255, 255, 255, 0.72)',
+    borderRadius: 30,
+    backgroundColor: 'rgba(245, 248, 252, 0.56)',
+    gap: 9,
+    overflow: 'hidden',
+    shadowColor: '#F4FAFF',
     shadowOffset: {
       width: 0,
-      height: 22,
+      height: 18,
     },
-    shadowOpacity: 0.18,
-    shadowRadius: 46,
-    elevation: 10,
+    shadowOpacity: 0.42,
+    shadowRadius: 52,
+    elevation: 12,
   },
 
   panelCompact: {
-    padding: 14,
-    borderRadius: 20,
+    padding: 16,
+    borderRadius: 28,
   },
 
-  logoPanel: {
-    alignItems: 'center',
-    gap: spacing.md,
-    paddingBottom: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(120, 137, 162, 0.24)',
+  cardGlassSurface: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    borderRadius: 30,
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    experimental_backgroundImage:
+      'linear-gradient(145deg, rgba(255, 255, 255, 0.58) 0%, rgba(255, 255, 255, 0.3) 45%, rgba(58, 130, 255, 0.1) 100%)',
   },
 
   brandBlock: {
+    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
+    gap: 10,
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.78)',
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.48)',
+    shadowColor: '#FFFFFF',
+    shadowOffset: {
+      width: 0,
+      height: 6,
+    },
+    shadowOpacity: 0.24,
+    shadowRadius: 14,
   },
 
   brandMark: {
-    width: 42,
-    height: 42,
+    width: 36,
+    height: 36,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 14,
-    backgroundColor: '#071832',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.44)',
+    backgroundColor: 'rgba(7, 24, 50, 0.94)',
+    shadowColor: '#071832',
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
+    shadowOpacity: 0.2,
+    shadowRadius: 14,
   },
 
   brandMarkText: {
     color: '#FFFFFF',
-    fontSize: typography.fontSize.lg,
+    fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
 
@@ -606,144 +734,115 @@ const styles = StyleSheet.create({
   },
 
   brandName: {
-    color: '#071832',
+    color: '#061832',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
 
   brandSubname: {
-    color: '#657386',
+    color: '#263B56',
     fontSize: typography.fontSize.sm,
   },
 
-  logoViewport: {
-    width: '100%',
-    maxWidth: 424,
-    height: 48,
-    overflow: 'hidden',
-    justifyContent: 'center',
-  },
-
-  logoTrack: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-
-  logoCapsule: {
-    width: LOGO_TILE_WIDTH,
-    height: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.xs,
-    borderWidth: 1,
-    borderColor: '#E0E7F0',
-    borderRadius: 14,
-    marginRight: LOGO_TILE_GAP,
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#10243F',
-    shadowOffset: {
-      width: 0,
-      height: 6,
-    },
-    shadowOpacity: 0.05,
-    shadowRadius: 14,
-  },
-
-  logoImage: {
-    width: '92%',
-    height: '82%',
-  },
-
-  header: {
-    gap: spacing.xs,
-    alignItems: 'center',
-  },
-
-  title: {
-    fontSize: 28,
-    lineHeight: 34,
-    fontWeight: typography.fontWeight.bold,
-    color: '#071832',
-    textAlign: 'center',
-  },
-
-  subtitle: {
-    fontSize: typography.fontSize.md,
-    lineHeight: 22,
-    color: '#526174',
-    textAlign: 'center',
-  },
-
-  form: {
-    gap: 14,
-  },
-
-  field: {
-    gap: spacing.xs,
-  },
-
-  label: {
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
-    color: '#10243F',
-  },
-
-  input: {
-    minHeight: 50,
-    paddingVertical: 13,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: '#D5DFEC',
-    borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.94)',
-    color: '#071832',
-    fontSize: typography.fontSize.md,
-  },
-
-  inputFocused: {
-    borderColor: '#1F5EA8',
-    shadowColor: '#1F5EA8',
+  cardAccent: {
+    width: 48,
+    height: 2,
+    alignSelf: 'center',
+    borderRadius: 999,
+    backgroundColor: '#3A82FF',
+    shadowColor: '#3A82FF',
     shadowOffset: {
       width: 0,
       height: 0,
     },
-    shadowOpacity: 0.18,
+    shadowOpacity: 0.52,
     shadowRadius: 10,
   },
 
-  passwordInputShell: {
-    minHeight: 50,
-    flexDirection: 'row',
+  header: {
+    gap: 2,
     alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: 0,
-    paddingLeft: spacing.md,
-    paddingRight: spacing.sm,
-    borderWidth: 1,
-    borderColor: '#D5DFEC',
-    borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.94)',
   },
 
-  passwordInput: {
+  title: {
+    color: '#031832',
+    fontSize: 26,
+    lineHeight: 31,
+    fontWeight: typography.fontWeight.bold,
+    textAlign: 'center',
+  },
+
+  subtitle: {
+    color: '#233A59',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+    textAlign: 'center',
+  },
+
+  form: {
+    gap: 9,
+  },
+
+  field: {
+    gap: 3,
+  },
+
+  label: {
+    color: '#061832',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  inputShell: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingLeft: 12,
+    paddingRight: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.88)',
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.58)',
+    shadowColor: '#071832',
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 18,
+  },
+
+  input: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 42,
     paddingVertical: 0,
     paddingHorizontal: 0,
-    color: '#071832',
-    fontSize: typography.fontSize.md,
+    color: '#031832',
+    fontSize: typography.fontSize.sm,
+  },
+
+  inputFocused: {
+    borderColor: '#3A82FF',
+    shadowColor: '#3A82FF',
+    shadowOffset: {
+      width: 0,
+      height: 0,
+    },
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
   },
 
   passwordToggle: {
-    width: 38,
-    height: 38,
+    width: 32,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 12,
   },
 
   passwordToggleHovered: {
-    backgroundColor: '#EEF4FB',
+    backgroundColor: 'rgba(238, 244, 251, 0.46)',
   },
 
   passwordTogglePressed: {
@@ -751,7 +850,7 @@ const styles = StyleSheet.create({
   },
 
   errorBox: {
-    padding: 12,
+    padding: 10,
     borderWidth: 1,
     borderColor: '#E9B8B8',
     borderRadius: 14,
@@ -759,32 +858,32 @@ const styles = StyleSheet.create({
   },
 
   errorText: {
+    color: '#8F2D24',
     fontSize: typography.fontSize.sm,
     lineHeight: typography.lineHeight.sm,
-    color: '#8F2D24',
   },
 
   button: {
-    minHeight: 50,
+    minHeight: 46,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 12,
-    backgroundColor: '#0F4C9A',
+    backgroundColor: '#1D65E5',
     experimental_backgroundImage:
-      'linear-gradient(135deg, #1557AD 0%, #0F4C9A 48%, #092F63 100%)',
-    shadowColor: '#0F4C9A',
+      'linear-gradient(135deg, #4B92FF 0%, #1D65E5 50%, #0E3E96 100%)',
+    shadowColor: '#2F7BFF',
     shadowOffset: {
       width: 0,
       height: 10,
     },
-    shadowOpacity: 0.22,
-    shadowRadius: 18,
+    shadowOpacity: 0.34,
+    shadowRadius: 22,
   },
 
   buttonHovered: {
-    backgroundColor: '#0B3E82',
+    backgroundColor: '#1557C8',
   },
 
   buttonPressed: {
@@ -796,18 +895,18 @@ const styles = StyleSheet.create({
   },
 
   buttonText: {
-    fontSize: typography.fontSize.md,
-    fontWeight: typography.fontWeight.bold,
     color: '#FFFFFF',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
   },
 
   forgotPasswordBlock: {
     alignItems: 'center',
-    gap: spacing.sm,
+    gap: 4,
   },
 
   forgotPasswordLink: {
-    minHeight: 30,
+    minHeight: 26,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: spacing.sm,
@@ -815,18 +914,18 @@ const styles = StyleSheet.create({
   },
 
   forgotPasswordLinkHovered: {
-    backgroundColor: '#EEF4FB',
+    backgroundColor: 'rgba(238, 244, 251, 0.42)',
   },
 
   forgotPasswordText: {
-    color: '#0F4C9A',
+    color: '#004FC4',
     fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
+    fontWeight: typography.fontWeight.bold,
   },
 
   forgotPasswordHelp: {
     width: '100%',
-    padding: 12,
+    padding: 10,
     borderWidth: 1,
     borderColor: '#C9D8EA',
     borderRadius: 14,
@@ -841,9 +940,63 @@ const styles = StyleSheet.create({
   },
 
   footerText: {
-    color: '#7A8798',
+    color: '#344B66',
     fontSize: typography.fontSize.xs,
     lineHeight: typography.lineHeight.xs,
     textAlign: 'center',
+  },
+
+  infoStrip: {
+    width: '100%',
+    maxWidth: 760,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 10,
+  },
+
+  infoStripCompact: {
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+
+  infoItem: {
+    flex: 1,
+    minWidth: 150,
+    maxWidth: 190,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 14,
+    backgroundColor: 'rgba(5, 16, 34, 0.36)',
+  },
+
+  infoIcon: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: 'rgba(217, 232, 255, 0.12)',
+  },
+
+  infoCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+
+  infoTitle: {
+    color: '#FFFFFF',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  infoSubtitle: {
+    color: '#C4D1E4',
+    fontSize: 10,
+    lineHeight: 13,
   },
 });
