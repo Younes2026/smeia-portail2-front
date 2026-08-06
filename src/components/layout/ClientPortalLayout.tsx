@@ -57,6 +57,12 @@ const navigationItems: ReadonlyArray<{
     shortLabel: 'Rendez-vous',
   },
   {
+    href: '/ai-diagnostic',
+    icon: { ios: 'sparkles', android: 'smart_toy', web: 'smart_toy' },
+    label: 'Assistant IA',
+    shortLabel: 'Assistant IA',
+  },
+  {
     href: '/vehicles',
     icon: { ios: 'car', android: 'directions_car', web: 'directions_car' },
     label: 'Mes véhicules',
