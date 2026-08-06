@@ -21,7 +21,12 @@ import type {
   AiDiagnosticQuestion,
   AiDiagnosticResult,
 } from '@/core/api/ai-diagnostics.api';
+import type { DictionaryItem, Workshop } from '@/core/api/dictionaries.api';
 import { HttpError } from '@/core/api/http-client';
+import {
+  useServiceTypes,
+  useWorkshops,
+} from '@/core/api/use-dictionaries';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
@@ -147,18 +152,50 @@ function getUniqueQuestions(
   });
 }
 
-function formatWorkshopIds(ids: readonly number[]): string {
-  const labels = ids.map((id) => `atelier n°${id}`);
+function joinNames(names: readonly string[]): string {
+  if (names.length === 0) {
+    return '';
+  }
 
-  if (labels.length === 0) {
+  if (names.length === 1) {
+    return names[0];
+  }
+
+  return `${names.slice(0, -1).join(', ')} et ${names.at(-1)}`;
+}
+
+function getServiceTypeName(
+  serviceTypeId: number | null,
+  serviceTypes: readonly DictionaryItem[]
+): string {
+  if (serviceTypeId === null) {
+    return 'Aucun service recommandé';
+  }
+
+  const serviceName = serviceTypes
+    .find((serviceType) => serviceType.id === serviceTypeId)
+    ?.name.trim();
+
+  return serviceName || 'Nom du service indisponible';
+}
+
+function getWorkshopNames(
+  workshopIds: readonly number[],
+  workshops: readonly Workshop[]
+): string {
+  if (workshopIds.length === 0) {
     return 'Aucun atelier proposé';
   }
 
-  if (labels.length === 1) {
-    return labels[0];
-  }
+  return joinNames(
+    workshopIds.map((workshopId) => {
+      const workshopName = workshops
+        .find((workshop) => workshop.id === workshopId)
+        ?.name.trim();
 
-  return `${labels.slice(0, -1).join(', ')} et ${labels.at(-1)}`;
+      return workshopName || "Nom de l'atelier indisponible";
+    })
+  );
 }
 
 export function AiDiagnosticScreen() {
@@ -183,6 +220,8 @@ export function AiDiagnosticScreen() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [result, setResult] = useState<AiDiagnosticResult | null>(null);
   const vehiclesQuery = useVehicles();
+  const serviceTypesQuery = useServiceTypes();
+  const workshopsQuery = useWorkshops();
   const analyzeDiagnostic = useAnalyzeAiDiagnostic();
   const { showToast } = useToasts();
   const user = useAuthStore((state) => state.user);
@@ -476,7 +515,14 @@ export function AiDiagnosticScreen() {
             ) : null}
 
             {journeyStep === 'result' && result ? (
-              <DiagnosticResultPanel result={result} onReset={resetJourney} />
+              <DiagnosticResultPanel
+                isServiceTypesLoading={serviceTypesQuery.isLoading}
+                isWorkshopsLoading={workshopsQuery.isLoading}
+                onReset={resetJourney}
+                result={result}
+                serviceTypes={serviceTypesQuery.data ?? []}
+                workshops={workshopsQuery.data ?? []}
+              />
             ) : null}
 
             {analysisError ? (
@@ -819,12 +865,20 @@ function DynamicQuestionField({
 }
 
 type DiagnosticResultPanelProps = {
+  isServiceTypesLoading: boolean;
+  isWorkshopsLoading: boolean;
   result: AiDiagnosticResult;
+  serviceTypes: readonly DictionaryItem[];
+  workshops: readonly Workshop[];
   onReset: () => void;
 };
 
 function DiagnosticResultPanel({
+  isServiceTypesLoading,
+  isWorkshopsLoading,
   result,
+  serviceTypes,
+  workshops,
   onReset,
 }: DiagnosticResultPanelProps) {
   if (result.diagnosis_status === 'out_of_scope') {
@@ -913,16 +967,29 @@ function DiagnosticResultPanel({
 
       <View style={styles.recommendationBox}>
         <Text style={styles.resultLabel}>Recommandation de contrôle</Text>
-        <Text style={styles.resultText}>
-          Service recommandé :{' '}
-          {result.suggested_service_type_id === null
-            ? 'à confirmer avec le SAV'
-            : `service n°${result.suggested_service_type_id}`}
-        </Text>
-        <Text style={styles.resultText}>
-          Ateliers proposés :{' '}
-          {formatWorkshopIds(result.suggested_workshop_ids)}
-        </Text>
+        {isServiceTypesLoading ? (
+          <Text style={styles.catalogLoadingText}>
+            Chargement du service recommandé...
+          </Text>
+        ) : (
+          <Text style={styles.resultText}>
+            Service recommandé :{' '}
+            {getServiceTypeName(
+              result.suggested_service_type_id,
+              serviceTypes
+            )}
+          </Text>
+        )}
+        {isWorkshopsLoading ? (
+          <Text style={styles.catalogLoadingText}>
+            Chargement des ateliers proposés...
+          </Text>
+        ) : (
+          <Text style={styles.resultText}>
+            Ateliers proposés :{' '}
+            {getWorkshopNames(result.suggested_workshop_ids, workshops)}
+          </Text>
+        )}
       </View>
 
       <OptionalPhotoSuggestion result={result} />
@@ -1616,6 +1683,12 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: '#F4F8FD',
     gap: spacing.sm,
+  },
+  catalogLoadingText: {
+    color: '#657386',
+    fontSize: typography.fontSize.sm,
+    fontStyle: 'italic',
+    lineHeight: typography.lineHeight.sm,
   },
   photoSuggestionBox: {
     padding: spacing.md,
