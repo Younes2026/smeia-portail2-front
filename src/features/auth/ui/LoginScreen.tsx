@@ -160,6 +160,8 @@ export function LoginScreen() {
   const router = useRouter();
   const accessToken = useAuthStore((state) => state.accessToken);
   const customer = useAuthStore((state) => state.customer);
+  const savAgent = useAuthStore((state) => state.savAgent);
+  const technician = useAuthStore((state) => state.technician);
   const hasHydrated = useAuthStore((state) => state.hasHydrated);
   const login = useLogin();
   const [email, setEmail] = useState('');
@@ -169,7 +171,9 @@ export function LoginScreen() {
   const [focusedField, setFocusedField] = useState<FocusedField>(null);
   const canSubmit =
     email.trim().length > 0 && password.length > 0 && !login.isPending;
-  const hasProtectedSession = Boolean(accessToken && customer);
+  const hasProtectedSession = Boolean(
+    accessToken && (customer || savAgent || technician)
+  );
   const panelTiltStyles = [
     styles.galleryPanelTiltOne,
     styles.galleryPanelTiltTwo,
@@ -184,18 +188,53 @@ export function LoginScreen() {
       return;
     }
 
+    if (savAgent && !customer) {
+      router.replace('/sav/dashboard');
+      return;
+    }
+
+    if (technician && !customer && !savAgent) {
+      router.replace('/technician/dashboard' as never);
+      return;
+    }
+
     router.replace('/');
-  }, [hasHydrated, hasProtectedSession, login.isPending, router]);
+  }, [
+    customer,
+    hasHydrated,
+    hasProtectedSession,
+    login.isPending,
+    router,
+    savAgent,
+    technician,
+  ]);
 
   const handleSubmit = () => {
     if (!canSubmit) {
       return;
     }
 
-    login.mutate({
-      email,
-      password,
-    });
+    login.mutate(
+      {
+        email,
+        password,
+      },
+      {
+        onSuccess: (session) => {
+          if (session.savAgent && !session.customer) {
+            router.replace('/sav/dashboard');
+            return;
+          }
+
+          if (session.technician && !session.customer && !session.savAgent) {
+            router.replace('/technician/dashboard' as never);
+            return;
+          }
+
+          router.replace('/');
+        },
+      }
+    );
   };
 
   return (

@@ -1,5 +1,8 @@
 export type AppointmentListItem = {
   id: number | string;
+  vehicleId: number | string | null;
+  serviceTypeId: number | string | null;
+  workshopId: number | string | null;
   vehicle: string;
   registrationNumber: string;
   serviceType: string;
@@ -10,4 +13,6 @@ export type AppointmentListItem = {
   requestedTimeValue: string;
   status: string;
   comment: string;
+  cancellationReason: string | null;
+  arrivalConfirmedAt: string | null;
 };

@@ -1,4 +1,5 @@
 import { httpClient } from '@/core/api/http-client';
+import { getDirectusRelationId } from '@/core/api/directus-relation';
 import type { DirectusVehicle } from '@/features/vehicles/model/vehicle.types';
 
 const VEHICLE_FIELDS = [
@@ -38,9 +39,13 @@ function buildVehicleDetailEndpoint(
 }
 
 export const vehiclesApi = {
-  getVehicles: (customerId: number) => {
-    return httpClient.get<DirectusVehicle[]>(
+  getVehicles: async (customerId: number) => {
+    const vehicles = await httpClient.get<DirectusVehicle[]>(
       buildVehiclesEndpoint(customerId)
+    );
+
+    return vehicles.filter(
+      (vehicle) => getDirectusRelationId(vehicle.customer_id) === customerId
     );
   },
 
@@ -52,6 +57,12 @@ export const vehiclesApi = {
       buildVehicleDetailEndpoint(vehicleId, customerId)
     );
 
-    return vehicles[0] ?? null;
+    return (
+      vehicles.find(
+        (vehicle) =>
+          vehicle.id === vehicleId &&
+          getDirectusRelationId(vehicle.customer_id) === customerId
+      ) ?? null
+    );
   },
 };

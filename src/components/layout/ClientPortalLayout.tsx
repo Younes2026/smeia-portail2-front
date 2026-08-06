@@ -1,5 +1,6 @@
 import { Link, useRouter } from 'expo-router';
-import type { PropsWithChildren } from 'react';
+import { SymbolView } from 'expo-symbols';
+import type { ComponentProps, PropsWithChildren } from 'react';
 import {
   Pressable,
   StyleSheet,
@@ -16,8 +17,11 @@ import { useLogout } from '@/features/auth/hooks/useLogout';
 import type { AuthCustomer, AuthUser } from '@/store/auth.store';
 import { useAuthStore } from '@/store/auth.store';
 
+type SymbolName = ComponentProps<typeof SymbolView>['name'];
+
 export type ClientPortalRoute =
   | '/'
+  | '/ai-diagnostic'
   | '/appointments'
   | '/history'
   | '/profile'
@@ -30,36 +34,43 @@ type ClientPortalLayoutProps = PropsWithChildren<{
 
 const navigationItems: ReadonlyArray<{
   href: ClientPortalRoute;
+  icon: SymbolName;
   label: string;
   shortLabel: string;
 }> = [
   {
     href: '/',
+    icon: { ios: 'square.grid.2x2', android: 'dashboard', web: 'dashboard' },
     label: 'Tableau de bord',
     shortLabel: 'Accueil',
   },
   {
     href: '/repairs',
+    icon: { ios: 'wrench', android: 'build', web: 'build' },
     label: 'Mes réparations',
     shortLabel: 'Réparations',
   },
   {
     href: '/appointments',
+    icon: { ios: 'calendar', android: 'calendar_month', web: 'calendar_month' },
     label: 'Prendre rendez-vous',
     shortLabel: 'Rendez-vous',
   },
   {
     href: '/vehicles',
+    icon: { ios: 'car', android: 'directions_car', web: 'directions_car' },
     label: 'Mes véhicules',
     shortLabel: 'Véhicules',
   },
   {
     href: '/history',
+    icon: { ios: 'clock.arrow.circlepath', android: 'history', web: 'history' },
     label: 'Historique',
     shortLabel: 'Historique',
   },
   {
     href: '/profile',
+    icon: { ios: 'person', android: 'person', web: 'person' },
     label: 'Profil',
     shortLabel: 'Profil',
   },
@@ -167,6 +178,11 @@ export function ClientPortalLayout({
                           isActive && styles.navIndicatorActive,
                         ]}
                       />
+                      <SymbolView
+                        name={item.icon}
+                        size={17}
+                        tintColor={isActive ? '#2F5FA6' : '#66758A'}
+                      />
                       <Text
                         style={[
                           styles.navItemText,
@@ -193,6 +209,15 @@ export function ClientPortalLayout({
                 logout.isPending && styles.disabled,
               ]}
             >
+              <SymbolView
+                name={{
+                  ios: 'rectangle.portrait.and.arrow.right',
+                  android: 'logout',
+                  web: 'logout',
+                }}
+                size={16}
+                tintColor="#2F5FA6"
+              />
               <Text style={styles.logoutButtonText}>
                 {logout.isPending ? 'Déconnexion...' : 'Déconnexion'}
               </Text>
@@ -210,9 +235,9 @@ const styles = StyleSheet.create({
   page: {
     flex: 1,
     overflow: 'hidden',
-    backgroundColor: '#F4F7FB',
+    backgroundColor: '#F4F6FA',
     experimental_backgroundImage:
-      'linear-gradient(135deg, #F8FAFC 0%, #EEF3F8 48%, #E7EEF7 100%)',
+      'linear-gradient(135deg, #F7F9FC 0%, #F3F6FA 46%, #EEF1F7 100%)',
   },
 
   backgroundShape: {
@@ -225,8 +250,8 @@ const styles = StyleSheet.create({
     height: 520,
     top: -220,
     right: -140,
-    backgroundColor: '#D6E2F2',
-    opacity: 0.72,
+    backgroundColor: '#DCE8F7',
+    opacity: 0.58,
   },
 
   shapeBottom: {
@@ -234,15 +259,15 @@ const styles = StyleSheet.create({
     height: 620,
     left: -260,
     bottom: -300,
-    backgroundColor: '#E3E8F0',
-    opacity: 0.86,
+    backgroundColor: '#E8EDF5',
+    opacity: 0.74,
   },
 
   shell: {
     flex: 1,
     flexDirection: 'row',
-    gap: spacing.lg,
-    padding: spacing.lg,
+    gap: spacing.md,
+    padding: spacing.md,
   },
 
   shellCompact: {
@@ -252,47 +277,56 @@ const styles = StyleSheet.create({
   },
 
   sidebar: {
-    width: 280,
+    width: 252,
     alignSelf: 'stretch',
-    padding: spacing.lg,
+    padding: 12,
     borderWidth: 1,
-    borderColor: 'rgba(130, 145, 166, 0.26)',
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-    gap: spacing.lg,
-    shadowColor: '#071832',
+    borderColor: '#E6EAF2',
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    gap: 10,
+    shadowColor: '#15294D',
     shadowOffset: {
       width: 0,
-      height: 18,
+      height: 8,
     },
-    shadowOpacity: 0.08,
-    shadowRadius: 32,
+    shadowOpacity: 0.06,
+    shadowRadius: 28,
   },
 
   sidebarCompact: {
     width: '100%',
-    padding: spacing.md,
-    gap: spacing.md,
+    padding: 12,
+    gap: 10,
   },
 
   brandBlock: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
+    gap: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
   },
 
   brandMark: {
-    width: 42,
-    height: 42,
+    width: 34,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 14,
-    backgroundColor: '#071832',
+    borderRadius: 12,
+    backgroundColor: '#15294D',
+    shadowColor: '#15294D',
+    shadowOffset: {
+      width: 0,
+      height: 6,
+    },
+    shadowOpacity: 0.14,
+    shadowRadius: 14,
   },
 
   brandMarkText: {
     color: '#FFFFFF',
-    fontSize: typography.fontSize.lg,
+    fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
 
@@ -301,38 +335,40 @@ const styles = StyleSheet.create({
   },
 
   brandName: {
-    color: '#071832',
-    fontSize: typography.fontSize.md,
+    color: '#15294D',
+    fontSize: 24,
+    lineHeight: 28,
     fontWeight: typography.fontWeight.bold,
   },
 
   brandSubname: {
-    color: '#657386',
-    fontSize: typography.fontSize.sm,
+    color: '#5A6470',
+    fontSize: typography.fontSize.xs,
+    lineHeight: typography.lineHeight.xs,
   },
 
   profileBlock: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
-    padding: spacing.md,
+    gap: spacing.sm,
+    padding: 10,
     borderWidth: 1,
-    borderColor: '#E5EBF3',
-    borderRadius: 18,
-    backgroundColor: '#F3F6FA',
+    borderColor: '#E6EAF2',
+    borderRadius: 16,
+    backgroundColor: '#FBFCFE',
   },
 
   avatar: {
-    width: 44,
-    height: 44,
+    width: 38,
+    height: 38,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 16,
-    backgroundColor: '#DDE8F6',
+    borderRadius: 14,
+    backgroundColor: '#E9F1FF',
   },
 
   avatarText: {
-    color: '#0F4C9A',
+    color: '#2F5FA6',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
@@ -343,18 +379,18 @@ const styles = StyleSheet.create({
   },
 
   profileLabel: {
-    color: '#657386',
+    color: '#6B7788',
     fontSize: typography.fontSize.xs,
   },
 
   profileName: {
-    color: '#071832',
+    color: '#15294D',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
   },
 
   navList: {
-    gap: spacing.xs,
+    gap: 2,
   },
 
   navListCompact: {
@@ -363,13 +399,13 @@ const styles = StyleSheet.create({
   },
 
   navItem: {
-    minHeight: 44,
+    minHeight: 38,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: 14,
+    paddingVertical: 7,
+    paddingHorizontal: spacing.sm,
+    borderRadius: 12,
   },
 
   navItemCompact: {
@@ -378,45 +414,47 @@ const styles = StyleSheet.create({
   },
 
   navItemActive: {
-    backgroundColor: '#E7F0FB',
+    backgroundColor: '#EDF4FF',
   },
 
   navItemHovered: {
-    backgroundColor: '#F3F6FA',
+    backgroundColor: '#F7FAFF',
   },
 
   navIndicator: {
     width: 3,
-    height: 18,
+    height: 16,
     borderRadius: 999,
     backgroundColor: 'transparent',
   },
 
   navIndicatorActive: {
-    backgroundColor: '#1E5AA8',
+    backgroundColor: '#2F5FA6',
   },
 
   navItemText: {
-    color: '#526174',
+    color: '#5A6470',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.medium,
   },
 
   navItemTextActive: {
-    color: '#0F4C9A',
+    color: '#2F5FA6',
     fontWeight: typography.fontWeight.bold,
   },
 
   logoutButton: {
-    minHeight: 44,
+    minHeight: 40,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: spacing.sm,
     marginTop: 'auto',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
     borderWidth: 1,
-    borderColor: '#D7DFEA',
-    borderRadius: 14,
+    borderColor: '#D8E2F0',
+    borderRadius: 12,
     backgroundColor: '#FFFFFF',
   },
 
@@ -426,12 +464,12 @@ const styles = StyleSheet.create({
   },
 
   logoutButtonHovered: {
-    borderColor: '#B8C9DF',
-    backgroundColor: '#F8FAFC',
+    borderColor: '#BFD2EC',
+    backgroundColor: '#F7FAFF',
   },
 
   logoutButtonText: {
-    color: '#10243F',
+    color: '#2F5FA6',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
   },

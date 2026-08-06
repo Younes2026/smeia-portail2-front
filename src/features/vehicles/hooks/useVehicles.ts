@@ -30,6 +30,8 @@ export function useVehicles() {
 
       return mapVehiclesToListItems(vehicles);
     },
+    enabled: customerId !== null,
+    refetchOnMount: 'always',
     refetchOnWindowFocus: true,
   });
 }
@@ -66,6 +68,8 @@ export function useVehicleDetail(vehicleId: number | null) {
         repairs: mapVehicleRepairsToListItems(repairs),
       };
     },
+    enabled: customerId !== null && vehicleId !== null,
+    refetchOnMount: 'always',
     refetchOnWindowFocus: true,
   });
 }

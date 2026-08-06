@@ -10,9 +10,13 @@ export function ProtectedRoute({ children }: PropsWithChildren) {
   const router = useRouter();
   const accessToken = useAuthStore((state) => state.accessToken);
   const customer = useAuthStore((state) => state.customer);
+  const savAgent = useAuthStore((state) => state.savAgent);
+  const technician = useAuthStore((state) => state.technician);
   const hasHydrated = useAuthStore((state) => state.hasHydrated);
   const clearSession = useAuthStore((state) => state.clearSession);
-  const hasProtectedSession = Boolean(accessToken && customer);
+  const hasProtectedSession = Boolean(
+    accessToken && (customer || savAgent || technician)
+  );
 
   useEffect(() => {
     if (!hasHydrated || hasProtectedSession) {

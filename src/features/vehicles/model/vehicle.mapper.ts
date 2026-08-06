@@ -18,6 +18,20 @@ function isObjectRelation<T>(relation: DirectusRelation<T>): relation is T {
   return typeof relation === 'object' && relation !== null;
 }
 
+function getFlexibleRelationId(relation: unknown): number | string | null {
+  if (typeof relation === 'number' || typeof relation === 'string') {
+    return relation;
+  }
+
+  if (typeof relation !== 'object' || relation === null || !('id' in relation)) {
+    return null;
+  }
+
+  const id = relation.id;
+
+  return typeof id === 'number' || typeof id === 'string' ? id : null;
+}
+
 function getBrandName(
   brand: DirectusRelation<DirectusVehicleBrand>
 ): string {
@@ -25,7 +39,11 @@ function getBrandName(
     return 'Marque non renseignée';
   }
 
-  return brand.name ?? 'Marque non renseignée';
+  return (
+    brand.name?.trim() ||
+    brand.label?.trim() ||
+    'Marque non renseignée'
+  );
 }
 
 function formatMileage(value?: number | null): string {
@@ -93,13 +111,17 @@ export function mapVehicleToListItem(
 ): VehicleListItem {
   return {
     id: vehicle.id,
+    brandId: getFlexibleRelationId(vehicle.brand_id),
     brandName: getBrandName(vehicle.brand_id ?? null),
     model: vehicle.model ?? 'Modèle non renseigné',
     registrationNumber:
       vehicle.registration_number ?? 'Immatriculation non renseignée',
     year: formatYear(vehicle.year),
+    yearValue: vehicle.year ?? null,
     mileage: formatMileage(vehicle.mileage),
+    mileageValue: vehicle.mileage ?? null,
     vin: vehicle.vin ?? 'VIN non renseigné',
+    vinValue: vehicle.vin?.trim() || null,
   };
 }
 

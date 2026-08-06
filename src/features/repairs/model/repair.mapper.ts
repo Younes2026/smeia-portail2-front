@@ -16,10 +16,16 @@ function isObjectRelation<T>(relation: DirectusRelation<T>): relation is T {
 }
 
 function getRelationId<T extends { id: number }>(
-  relation: DirectusRelation<T>
+  relation: DirectusRelation<T> | string
 ): number | null {
   if (typeof relation === 'number') {
     return relation;
+  }
+
+  if (typeof relation === 'string') {
+    const numericId = Number(relation);
+
+    return Number.isFinite(numericId) ? numericId : null;
   }
 
   if (isObjectRelation(relation)) {
@@ -27,6 +33,32 @@ function getRelationId<T extends { id: number }>(
   }
 
   return null;
+}
+
+function getAppointmentId(
+  relation: DirectusRepair['appointment_id']
+): number | string | null {
+  if (typeof relation === 'number' || typeof relation === 'string') {
+    return relation;
+  }
+
+  return relation?.id ?? null;
+}
+
+function getFlexibleRelationId(
+  relation: unknown
+): number | string | null {
+  if (typeof relation === 'number' || typeof relation === 'string') {
+    return relation;
+  }
+
+  if (typeof relation !== 'object' || relation === null || !('id' in relation)) {
+    return null;
+  }
+
+  const id = relation.id;
+
+  return typeof id === 'number' || typeof id === 'string' ? id : null;
 }
 
 function getCustomerName(customer: DirectusRelation<DirectusCustomer>): string {
@@ -42,6 +74,10 @@ function getCustomerName(customer: DirectusRelation<DirectusCustomer>): string {
 }
 
 function getVehicleLabel(vehicle: DirectusRelation<DirectusVehicle>): string {
+  if (typeof vehicle === 'number') {
+    return `Véhicule #${vehicle}`;
+  }
+
   if (!isObjectRelation(vehicle)) {
     return 'Véhicule non renseigné';
   }
@@ -53,17 +89,21 @@ function getVehicleLabel(vehicle: DirectusRelation<DirectusVehicle>): string {
     return `${model} - ${registration}`;
   }
 
-  return model ?? registration ?? 'Véhicule non renseigné';
+  return model ?? registration ?? `Véhicule #${vehicle.id}`;
 }
 
 function getVehicleModel(
   vehicle: DirectusRelation<DirectusVehicle>
 ): string {
+  if (typeof vehicle === 'number') {
+    return `Véhicule #${vehicle}`;
+  }
+
   if (!isObjectRelation(vehicle)) {
     return 'Véhicule non renseigné';
   }
 
-  return vehicle.model ?? 'Véhicule non renseigné';
+  return vehicle.model ?? `Véhicule #${vehicle.id}`;
 }
 
 function getRegistrationNumber(
@@ -76,15 +116,26 @@ function getRegistrationNumber(
   return vehicle.registration_number ?? 'Immatriculation non renseignée';
 }
 
-function getRelationName<T extends { name: string }>(
+function getRelationName<
+  T extends { id: number; label?: string | null; name?: string | null },
+>(
   relation: DirectusRelation<T>,
+  relationLabel: string,
   fallback: string
 ): string {
+  if (typeof relation === 'number') {
+    return `${relationLabel} #${relation}`;
+  }
+
   if (!isObjectRelation(relation)) {
     return fallback;
   }
 
-  return relation.name || fallback;
+  return (
+    relation.name?.trim() ||
+    relation.label?.trim() ||
+    `${relationLabel} #${relation.id}`
+  );
 }
 
 function getVehicleFromRepair(
@@ -143,6 +194,20 @@ function formatYear(value?: number | null): string {
   return String(value);
 }
 
+function formatDate(value?: string | null): string {
+  if (!value) {
+    return 'Date non renseignée';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleDateString('fr-FR');
+}
+
 function getCustomerPhone(customer: DirectusRelation<DirectusCustomer>): string {
   if (!isObjectRelation(customer)) {
     return 'Téléphone non renseigné';
@@ -179,8 +244,25 @@ export function mapRepairToListItem(repair: DirectusRepair): RepairListItem {
 
   return {
     id: repair.id,
+    appointmentId: getAppointmentId(repair.appointment_id ?? null),
     customerId: getRelationId(customer),
-    documentNumber: repair.document_number ?? 'Document non renseigné',
+    vehicleId: getRelationId(repair.vehicle_id ?? null),
+    statusId: getFlexibleRelationId(repair.status_id),
+    serviceTypeId: getFlexibleRelationId(repair.service_type_id),
+    workshopId: getFlexibleRelationId(repair.workshop_id),
+    realExitDate: repair.real_exit_date ?? null,
+    entryDate: formatDate(repair.entry_date),
+    entryDateValue: repair.entry_date ?? null,
+    realDiagnosis: repair.real_diagnosis?.trim() || null,
+    workDone: repair.work_done?.trim() || null,
+    description: repair.description?.trim() || null,
+    note: repair.note?.trim() || null,
+    solutionDescription: repair.solution_description?.trim() || null,
+    technicianRecommendations:
+      repair.technician_recommendations?.trim() || null,
+    entryMileageValue: repair.entry_mileage ?? null,
+    finalCost: repair.final_cost ?? null,
+    documentNumber: repair.document_number ?? `Dossier #${repair.id}`,
 
     customerName: getCustomerName(customer),
     vehicleLabel: getVehicleLabel(repair.vehicle_id ?? null),
@@ -189,21 +271,25 @@ export function mapRepairToListItem(repair: DirectusRepair): RepairListItem {
 
     brandName: getRelationName<DirectusBrand>(
       getBrandFromRepair(repair),
+      'Marque',
       'Marque non renseignée'
     ),
 
     statusName: getRelationName<DirectusStatus>(
       repair.status_id ?? null,
+      'Statut',
       'Statut non renseigné'
     ),
 
     serviceTypeName: getRelationName<DirectusServiceType>(
       repair.service_type_id ?? null,
-      'Type de service non renseigné'
+      'Service',
+      'Service non renseigné'
     ),
 
     workshopName: getRelationName<DirectusWorkshop>(
       repair.workshop_id ?? null,
+      'Atelier',
       'Atelier non renseigné'
     ),
 

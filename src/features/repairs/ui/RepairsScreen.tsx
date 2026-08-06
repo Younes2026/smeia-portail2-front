@@ -1,4 +1,6 @@
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import { useMemo, useState } from 'react';
 import {
   Pressable,
@@ -18,8 +20,10 @@ import { breakpoints } from '@/core/theme/breakpoints';
 import { colors } from '@/core/theme/colors';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
+import { useClientRepairPresentation } from '@/features/repairs/hooks/useClientRepairPresentation';
 import { useRepairs } from '@/features/repairs/hooks/useRepairs';
-import type { RepairListItem } from '@/features/repairs/model/repair.types';
+import type { ClientRepairViewModel } from '@/features/repairs/model/client-repair.presenter';
+import { getBrandLogo } from '@/features/vehicles/model/brand-logo';
 import { useAuthStore } from '@/store/auth.store';
 
 function normalizeSearchValue(value: string): string {
@@ -39,23 +43,26 @@ function getDisplayName(
   return fullName || email || 'Client SMEIA';
 }
 
-function matchesSearch(repair: RepairListItem, normalizedQuery: string): boolean {
+function matchesSearch(
+  repair: ClientRepairViewModel,
+  normalizedQuery: string
+): boolean {
   if (!normalizedQuery) {
     return true;
   }
 
   return [
     repair.vehicleLabel,
-    repair.vehicleModel,
     repair.brandName,
-    repair.registrationNumber,
-    repair.statusName,
-    repair.serviceTypeName,
-    repair.workshopName,
-    repair.documentNumber,
-    repair.receptionistName,
-  ].some((value) =>
-    normalizeSearchValue(value).includes(normalizedQuery)
+    repair.registrationLabel,
+    repair.statusLabel,
+    repair.serviceLabel,
+    repair.workshopLabel,
+    repair.referenceLabel,
+  ].some(
+    (value) =>
+      value !== null &&
+      normalizeSearchValue(value).includes(normalizedQuery)
   );
 }
 
@@ -67,6 +74,9 @@ export function RepairsScreen() {
   const user = useAuthStore((state) => state.user);
   const customer = useAuthStore((state) => state.customer);
   const repairs = repairsQuery.data ?? [];
+  const repairPresentation = useClientRepairPresentation(repairs);
+  const presentedRepairs = repairPresentation.data;
+  const isLoading = repairsQuery.isLoading || repairPresentation.isLoading;
   const clientName = getDisplayName(
     customer?.firstName ?? user?.firstName,
     customer?.lastName ?? user?.lastName,
@@ -75,8 +85,10 @@ export function RepairsScreen() {
   const normalizedQuery = normalizeSearchValue(searchQuery.trim());
   const filteredRepairs = useMemo(
     () =>
-      repairs.filter((repair) => matchesSearch(repair, normalizedQuery)),
-    [normalizedQuery, repairs]
+      presentedRepairs.filter((repair) =>
+        matchesSearch(repair, normalizedQuery)
+      ),
+    [normalizedQuery, presentedRepairs]
   );
 
   return (
@@ -128,7 +140,7 @@ export function RepairsScreen() {
             </View>
           </View>
 
-          {repairsQuery.isLoading ? (
+          {isLoading ? (
             <View style={styles.statePanel}>
               <LoadingState message="Chargement des réparations..." />
             </View>
@@ -146,7 +158,7 @@ export function RepairsScreen() {
             </View>
           ) : null}
 
-          {!repairsQuery.isLoading &&
+          {!isLoading &&
           !repairsQuery.isError &&
           repairs.length === 0 ? (
             <View style={styles.statePanel}>
@@ -157,7 +169,7 @@ export function RepairsScreen() {
             </View>
           ) : null}
 
-          {!repairsQuery.isLoading &&
+          {!isLoading &&
           !repairsQuery.isError &&
           repairs.length > 0 &&
           filteredRepairs.length === 0 ? (
@@ -184,7 +196,7 @@ export function RepairsScreen() {
             </View>
           ) : null}
 
-          {!repairsQuery.isLoading &&
+          {!isLoading &&
           !repairsQuery.isError &&
           filteredRepairs.length > 0 ? (
             <View style={styles.repairGrid}>
@@ -199,11 +211,12 @@ export function RepairsScreen() {
 }
 
 type RepairCardProps = {
-  repair: RepairListItem;
+  repair: ClientRepairViewModel;
 };
 
 function RepairCard({ repair }: RepairCardProps) {
   const router = useRouter();
+  const brandLogo = getBrandLogo(repair.brandName);
 
   const openDetails = () => {
     router.push({
@@ -218,31 +231,59 @@ function RepairCard({ repair }: RepairCardProps) {
     <View style={styles.repairCard}>
       <View style={styles.cardHeader}>
         <View style={styles.documentBlock}>
-          <Text style={styles.cardKicker}>Document</Text>
-          <Text style={styles.documentNumber}>{repair.documentNumber}</Text>
+          <Text style={styles.cardKicker}>Référence atelier</Text>
+          <Text numberOfLines={2} style={styles.documentNumber}>
+            {repair.referenceLabel}
+          </Text>
+          <Text style={styles.entryDate}>Entrée le {repair.entryDateLabel}</Text>
         </View>
 
         <View style={styles.statusBadge}>
-          <Text style={styles.statusText}>{repair.statusName}</Text>
+          <Text style={styles.statusText}>{repair.statusLabel}</Text>
         </View>
       </View>
 
       <View style={styles.vehicleBlock}>
-        <Text style={styles.brandNameCard}>{repair.brandName}</Text>
-        <Text style={styles.vehicleModel}>{repair.vehicleLabel}</Text>
-        <Text style={styles.registrationNumber}>
-          {repair.registrationNumber}
-        </Text>
+        <View
+          style={[
+            styles.brandLogoFrame,
+            brandLogo &&
+              'needsLightSurface' in brandLogo &&
+              brandLogo.needsLightSurface &&
+              styles.brandLogoFrameLight,
+          ]}
+        >
+          {brandLogo ? (
+            <Image
+              accessibilityLabel={`Logo ${brandLogo.name}`}
+              contentFit="contain"
+              source={brandLogo.source}
+              style={styles.brandLogo}
+            />
+          ) : (
+            <SymbolView
+              name={{
+                ios: 'car',
+                android: 'directions_car',
+                web: 'directions_car',
+              }}
+              size={28}
+              tintColor="#8FB7E8"
+            />
+          )}
+        </View>
+        <View style={styles.vehicleCopy}>
+          <Text style={styles.vehicleEyebrow}>Véhicule</Text>
+          <Text numberOfLines={2} style={styles.vehicleModel}>
+            {repair.vehicleLabel}
+          </Text>
+        </View>
       </View>
 
       <View style={styles.detailGrid}>
-        <RepairDetail label="Type de service" value={repair.serviceTypeName} />
-        <RepairDetail label="Atelier" value={repair.workshopName} />
-        <RepairDetail label="Kilométrage d'entrée" value={repair.entryMileage} />
-        <RepairDetail
-          label="Réceptionniste"
-          value={repair.receptionistName}
-        />
+        <RepairDetail label="Prestation" value={repair.serviceLabel} />
+        <RepairDetail label="Atelier" value={repair.workshopLabel} />
+        <RepairDetail label="Réception" value={repair.entryDateLabel} />
       </View>
 
       <Pressable
@@ -254,7 +295,16 @@ function RepairCard({ repair }: RepairCardProps) {
           pressed && styles.pressed,
         ]}
       >
-        <Text style={styles.detailsButtonText}>Voir détails</Text>
+        <Text style={styles.detailsButtonText}>Consulter le suivi</Text>
+        <SymbolView
+          name={{
+            ios: 'arrow.right',
+            android: 'arrow_forward',
+            web: 'arrow_forward',
+          }}
+          size={16}
+          tintColor="#FFFFFF"
+        />
       </Pressable>
     </View>
   );
@@ -471,15 +521,15 @@ const styles = StyleSheet.create({
 
   repairCard: {
     flexGrow: 1,
-    flexBasis: 430,
+    flexBasis: 380,
     minWidth: 300,
-    maxWidth: 700,
+    maxWidth: 600,
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: 'rgba(148, 163, 184, 0.26)',
-    borderRadius: 22,
+    borderColor: '#E6EAF2',
+    borderRadius: 20,
     backgroundColor: '#FFFFFF',
-    gap: spacing.lg,
+    gap: spacing.md,
     shadowColor: '#071832',
     shadowOffset: {
       width: 0,
@@ -509,8 +559,14 @@ const styles = StyleSheet.create({
 
   documentNumber: {
     color: '#071832',
-    fontSize: typography.fontSize.lg,
+    fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
+  },
+
+  entryDate: {
+    color: '#657386',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semiBold,
   },
 
   statusBadge: {
@@ -531,28 +587,53 @@ const styles = StyleSheet.create({
   },
 
   vehicleBlock: {
+    minHeight: 92,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
     padding: spacing.md,
     borderRadius: 16,
-    backgroundColor: '#F5F8FC',
+    backgroundColor: '#0B1220',
+  },
+
+  brandLogoFrame: {
+    width: 64,
+    height: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.xs,
+    borderWidth: 1,
+    borderColor: '#26344C',
+    borderRadius: 14,
+    backgroundColor: '#172238',
+  },
+
+  brandLogoFrameLight: {
+    borderColor: '#D7E0EC',
+    backgroundColor: '#FFFFFF',
+  },
+
+  brandLogo: {
+    width: '100%',
+    height: '100%',
+  },
+
+  vehicleCopy: {
+    flex: 1,
+    minWidth: 0,
     gap: spacing.xs,
   },
 
-  brandNameCard: {
-    color: '#1E5AA8',
+  vehicleEyebrow: {
+    color: '#8FB7E8',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
   },
 
   vehicleModel: {
-    color: '#071832',
-    fontSize: typography.fontSize.xl,
+    color: '#FFFFFF',
+    fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
-  },
-
-  registrationNumber: {
-    color: '#526174',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
   },
 
   detailGrid: {
@@ -563,14 +644,10 @@ const styles = StyleSheet.create({
 
   detailItem: {
     flexGrow: 1,
-    flexBasis: 190,
-    minWidth: 170,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: '#E5EBF3',
-    borderRadius: 14,
-    backgroundColor: '#FFFFFF',
+    flexBasis: 150,
+    minWidth: 140,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
     gap: spacing.xs,
   },
 
@@ -587,8 +664,10 @@ const styles = StyleSheet.create({
 
   detailsButton: {
     minHeight: 46,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: spacing.sm,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderRadius: 14,

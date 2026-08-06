@@ -117,7 +117,7 @@ async function request<T>(
   if (!response.ok) {
     const errorPayload = await parseJson(response);
 
-    if ([401, 403].includes(response.status)) {
+    if (response.status === 401) {
       useAuthStore.getState().clearSession();
       queryClient.clear();
     }

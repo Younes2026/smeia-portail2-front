@@ -5,6 +5,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function getRelationId(relation: unknown): number | string | null {
+  if (typeof relation === 'number' || typeof relation === 'string') {
+    return relation;
+  }
+
+  if (!isRecord(relation)) {
+    return null;
+  }
+
+  const id = relation.id;
+
+  return typeof id === 'number' || typeof id === 'string' ? id : null;
+}
+
 function getRelationName(
   relation: number | { id: number; name?: string | null },
   fallback: string
@@ -85,6 +99,9 @@ export function mapAppointmentToListItem(
 ): AppointmentListItem {
   return {
     id: appointment.id,
+    vehicleId: getRelationId(appointment.vehicle_id),
+    serviceTypeId: getRelationId(appointment.service_type_id),
+    workshopId: getRelationId(appointment.workshop_id),
     vehicle: getVehicleLabel(appointment.vehicle_id),
     registrationNumber: getRegistrationNumber(appointment.vehicle_id),
     serviceType: getRelationName(
@@ -101,6 +118,8 @@ export function mapAppointmentToListItem(
     requestedTimeValue: appointment.requested_time,
     status: appointment.status,
     comment: appointment.comment?.trim() || 'Aucun commentaire',
+    cancellationReason: appointment.cancellation_reason?.trim() || null,
+    arrivalConfirmedAt: appointment.arrival_confirmed_at ?? null,
   };
 }
 

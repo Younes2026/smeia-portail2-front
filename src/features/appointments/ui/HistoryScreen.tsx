@@ -1,5 +1,7 @@
+import { Image } from 'expo-image';
 import { Link } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { SymbolView } from 'expo-symbols';
+import { useEffect, useMemo, useState, type ComponentProps } from 'react';
 import {
   Modal,
   Pressable,
@@ -12,284 +14,216 @@ import {
 } from 'react-native';
 
 import { ErrorState } from '@/components/feedback/ErrorState';
-import { LoadingState } from '@/components/feedback/LoadingState';
 import { ClientPortalLayout } from '@/components/layout/ClientPortalLayout';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
+import { useCancelAppointment } from '@/features/appointments/hooks/useAppointmentsHistory';
+import { useHistoryEvents } from '@/features/appointments/hooks/useHistoryEvents';
 import {
-  useAppointmentsHistory,
-  useCancelAppointment,
-} from '@/features/appointments/hooks/useAppointmentsHistory';
-import type { AppointmentListItem } from '@/features/appointments/model/appointment.types';
+  getAppointmentStatusKey,
+  getHistoryEventSection,
+  getServiceJourneyProgress,
+  type HistoryEvent,
+  type HistoryEventType,
+  type HistorySectionKey,
+  type HistoryStatusTone,
+} from '@/features/appointments/model/history-event.presenter';
+import { getBrandLogo } from '@/features/vehicles/model/brand-logo';
 
-const historyTabs = [
-  { label: 'Tous', value: 'all' },
-  { label: 'Rendez-vous', value: 'appointments' },
-  { label: 'Réparations', value: 'repairs' },
+type SymbolName = ComponentProps<typeof SymbolView>['name'];
+type HistoryTypeFilter = 'all' | 'appointments' | 'repairs';
+type SortDirection = 'desc' | 'asc';
+
+const HISTORY_SECTIONS: Array<{
+  key: HistorySectionKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: 'upcoming',
+    title: 'À venir',
+    description: 'Vos prochaines visites planifiées chez SMEIA.',
+  },
+  {
+    key: 'inProgress',
+    title: 'En cours',
+    description: 'Les prises en charge actuellement suivies par nos ateliers.',
+  },
+  {
+    key: 'history',
+    title: 'Historique',
+    description: 'Vos rendez-vous passés et interventions réalisées.',
+  },
+];
+
+const JOURNEY_STEPS = [
+  'Rendez-vous',
+  'Réception',
+  'Diagnostic',
+  'Intervention',
+  'Restitution',
 ] as const;
 
-const statusFilterOptions = [
-  { label: 'Tous les statuts', value: 'all' },
-  { label: 'En attente', value: 'pending' },
-  { label: 'Confirmé', value: 'confirmed' },
-  { label: 'Annulé', value: 'cancelled' },
-  { label: 'Terminé', value: 'completed' },
-] as const;
-
-const sortOptions = [
-  { label: 'Plus récent d’abord', value: 'desc' },
-  { label: 'Plus ancien d’abord', value: 'asc' },
-] as const;
-
-type HistoryTab = (typeof historyTabs)[number]['value'];
-type StatusFilter = (typeof statusFilterOptions)[number]['value'];
-type AppointmentStatusKey = Exclude<StatusFilter, 'all'>;
-type SortDirection = (typeof sortOptions)[number]['value'];
-
-type VehicleFilterOption = {
-  label: string;
-  value: string;
-};
-
-function normalizeText(value: string): string {
+function normalize(value: string): string {
   return value
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
-    .toLowerCase();
+    .toLocaleLowerCase('fr-FR');
 }
 
-function normalizeStatus(status: string): string {
-  return normalizeText(status);
+function formatDetailDate(value?: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat('fr-FR', {
+        dateStyle: 'medium',
+        timeStyle: value.includes('T') ? 'short' : undefined,
+      }).format(date);
 }
 
-function getStatusKey(status: string): AppointmentStatusKey | 'other' {
-  const normalizedStatus = normalizeStatus(status);
-
-  if (['pending', 'en attente'].includes(normalizedStatus)) {
-    return 'pending';
-  }
-
-  if (['confirmed', 'confirme'].includes(normalizedStatus)) {
-    return 'confirmed';
-  }
-
-  if (['cancelled', 'canceled', 'annule', 'annulee'].includes(normalizedStatus)) {
-    return 'cancelled';
-  }
-
-  if (
-    ['completed', 'complete', 'finished', 'done', 'termine', 'cloture'].includes(
-      normalizedStatus
-    )
-  ) {
-    return 'completed';
-  }
-
-  return 'other';
+function getEventTypeLabel(type: HistoryEventType): string {
+  if (type === 'serviceJourney') return 'Parcours atelier';
+  if (type === 'repair') return 'Réparation';
+  return 'Rendez-vous';
 }
 
-function getStatusLabel(status: string): string {
-  const statusKey = getStatusKey(status);
-
-  if (statusKey === 'pending') {
-    return 'En attente';
+function getEventIcon(event: HistoryEvent): SymbolName {
+  if (event.repair?.statusKey === 'completed') {
+    return { ios: 'checkmark.circle', android: 'task_alt', web: 'task_alt' };
   }
-
-  if (statusKey === 'cancelled') {
-    return 'Annulé';
+  if (event.type === 'appointment') {
+    return { ios: 'calendar', android: 'event', web: 'event' };
   }
-
-  if (statusKey === 'confirmed') {
-    return 'Confirmé';
-  }
-
-  if (statusKey === 'completed') {
-    return 'Terminé';
-  }
-
-  return status.trim() || 'Statut non renseigné';
+  return { ios: 'wrench', android: 'build', web: 'build' };
 }
 
-function getVehicleFilterValue(appointment: AppointmentListItem): string {
-  return `${appointment.vehicle}::${appointment.registrationNumber}`;
+function getVehicleFilterValue(event: HistoryEvent): string {
+  return event.vehicleId !== null
+    ? `vehicle-${String(event.vehicleId)}`
+    : `label-${normalize(event.vehicleLabel)}`;
 }
 
-function getVehicleFilterLabel(appointment: AppointmentListItem): string {
-  const vehicle = appointment.vehicle.trim() || 'Véhicule non renseigné';
-  const registrationNumber =
-    appointment.registrationNumber.trim() || 'Immatriculation non renseignée';
-
-  return `${vehicle} · ${registrationNumber}`;
-}
-
-function getAppointmentTimestamp(appointment: AppointmentListItem): number {
-  const dateValue = appointment.requestedDateValue.trim();
-
-  if (!dateValue) {
-    return 0;
-  }
-
-  const [year, month, day] = dateValue.split('-').map(Number);
-
-  if (!year || !month || !day) {
-    const fallbackTimestamp = new Date(dateValue).getTime();
-
-    return Number.isNaN(fallbackTimestamp) ? 0 : fallbackTimestamp;
-  }
-
-  const [hours = '0', minutes = '0'] =
-    appointment.requestedTimeValue.trim().split(':');
-  const timestamp = new Date(
-    year,
-    month - 1,
-    day,
-    Number(hours) || 0,
-    Number(minutes) || 0
-  ).getTime();
-
-  return Number.isNaN(timestamp) ? 0 : timestamp;
-}
-
-function isAppointmentDateClearlyPast(
-  appointment: AppointmentListItem
-): boolean {
-  const dateValue = appointment.requestedDateValue.trim();
-
-  if (!dateValue) {
-    return false;
-  }
-
-  const [year, month, day] = dateValue.split('-').map(Number);
-
-  if (!year || !month || !day) {
-    return false;
-  }
-
-  const appointmentDate = new Date(year, month - 1, day);
+function canCancelEvent(event: HistoryEvent): boolean {
+  const eventDay = new Date(event.timestamp);
   const today = new Date();
-
-  appointmentDate.setHours(0, 0, 0, 0);
+  eventDay.setHours(0, 0, 0, 0);
   today.setHours(0, 0, 0, 0);
 
-  return appointmentDate.getTime() < today.getTime();
-}
-
-function canCancelAppointment(appointment: AppointmentListItem): boolean {
   return (
-    getStatusKey(appointment.status) === 'pending' &&
-    !isAppointmentDateClearlyPast(appointment)
-  );
-}
-
-function matchesSearch(
-  appointment: AppointmentListItem,
-  normalizedSearch: string
-): boolean {
-  if (!normalizedSearch) {
-    return true;
-  }
-
-  const searchableText = normalizeText(
-    [
-      appointment.vehicle,
-      appointment.registrationNumber,
-      appointment.serviceType,
-      appointment.workshop,
-      appointment.requestedDate,
-      appointment.requestedTime,
-      getStatusLabel(appointment.status),
-      appointment.comment,
-    ].join(' ')
-  );
-
-  return searchableText.includes(normalizedSearch);
-}
-
-function matchesStatusFilter(
-  appointment: AppointmentListItem,
-  statusFilter: StatusFilter
-): boolean {
-  return statusFilter === 'all' || getStatusKey(appointment.status) === statusFilter;
-}
-
-function matchesVehicleFilter(
-  appointment: AppointmentListItem,
-  vehicleFilter: string
-): boolean {
-  return (
-    vehicleFilter === 'all' || getVehicleFilterValue(appointment) === vehicleFilter
+    event.type === 'appointment' &&
+    event.appointment !== null &&
+    getAppointmentStatusKey(event.appointment.status) === 'pending' &&
+    eventDay.getTime() >= today.getTime()
   );
 }
 
 export function HistoryScreen() {
   const { width } = useWindowDimensions();
   const isNarrow = width < breakpoints.tablet;
-  const appointmentsQuery = useAppointmentsHistory();
+  const historyQuery = useHistoryEvents();
   const cancelAppointment = useCancelAppointment();
-  const [appointmentToCancel, setAppointmentToCancel] = useState<
-    number | string | null
-  >(null);
-  const [activeTab, setActiveTab] = useState<HistoryTab>('all');
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [confirmCancellation, setConfirmCancellation] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [typeFilter, setTypeFilter] = useState<HistoryTypeFilter>('all');
   const [vehicleFilter, setVehicleFilter] = useState('all');
+  const [yearFilter, setYearFilter] = useState('all');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
-  const appointments = appointmentsQuery.data ?? [];
-  const pendingCount = appointments.filter(
-    (appointment) => getStatusKey(appointment.status) === 'pending'
-  ).length;
+  const [secondaryFiltersVisible, setSecondaryFiltersVisible] = useState(false);
+  const events = historyQuery.events;
+  const selectedEvent =
+    events.find((event) => event.id === selectedEventId) ?? null;
 
   const vehicleOptions = useMemo(() => {
-    const options = new Map<string, VehicleFilterOption>();
-
-    appointments.forEach((appointment) => {
-      const value = getVehicleFilterValue(appointment);
-
+    const options = new Map<
+      string,
+      { brandName: string | null; label: string; value: string }
+    >();
+    events.forEach((event) => {
+      const value = getVehicleFilterValue(event);
       if (!options.has(value)) {
         options.set(value, {
-          label: getVehicleFilterLabel(appointment),
+          brandName: event.brandName,
+          label: event.vehicleLabel,
           value,
         });
       }
     });
-
     return Array.from(options.values()).sort((first, second) =>
       first.label.localeCompare(second.label, 'fr-FR')
     );
-  }, [appointments]);
+  }, [events]);
 
-  const filteredAppointments = useMemo(() => {
-    const normalizedSearch = normalizeText(searchQuery);
+  const yearOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          events
+            .map((event) => event.dateValue?.match(/^(\d{4})/)?.[1] ?? null)
+            .filter((year): year is string => Boolean(year))
+        )
+      ).sort((first, second) => Number(second) - Number(first)),
+    [events]
+  );
 
-    return appointments
-      .filter((appointment) => matchesSearch(appointment, normalizedSearch))
-      .filter((appointment) => matchesStatusFilter(appointment, statusFilter))
-      .filter((appointment) => matchesVehicleFilter(appointment, vehicleFilter))
-      .sort((first, second) => {
-        const firstTimestamp = getAppointmentTimestamp(first);
-        const secondTimestamp = getAppointmentTimestamp(second);
+  const filteredEvents = useMemo(() => {
+    const search = normalize(searchQuery);
+    return events.filter((event) => {
+      const matchesType =
+        typeFilter === 'all' ||
+        (typeFilter === 'appointments' &&
+          ['appointment', 'serviceJourney'].includes(event.type)) ||
+        (typeFilter === 'repairs' &&
+          ['repair', 'serviceJourney'].includes(event.type));
+      const matchesVehicle =
+        vehicleFilter === 'all' ||
+        getVehicleFilterValue(event) === vehicleFilter;
+      const matchesYear =
+        yearFilter === 'all' || event.dateValue?.startsWith(yearFilter);
+      const matchesSearch = !search || event.searchText.includes(search);
+      return matchesType && matchesVehicle && matchesYear && matchesSearch;
+    });
+  }, [events, searchQuery, typeFilter, vehicleFilter, yearFilter]);
 
-        if (firstTimestamp === secondTimestamp) {
-          return String(first.id).localeCompare(String(second.id), 'fr-FR');
-        }
+  const sectionEvents = useMemo(() => {
+    const grouped: Record<HistorySectionKey, HistoryEvent[]> = {
+      upcoming: [],
+      inProgress: [],
+      history: [],
+    };
+    filteredEvents.forEach((event) => {
+      grouped[getHistoryEventSection(event)].push(event);
+    });
+    grouped.upcoming.sort((first, second) => first.timestamp - second.timestamp);
+    const chronologicalSort = (first: HistoryEvent, second: HistoryEvent) =>
+      sortDirection === 'desc'
+        ? second.timestamp - first.timestamp
+        : first.timestamp - second.timestamp;
+    grouped.inProgress.sort(chronologicalSort);
+    grouped.history.sort(chronologicalSort);
+    return grouped;
+  }, [filteredEvents, sortDirection]);
 
-        return sortDirection === 'desc'
-          ? secondTimestamp - firstTimestamp
-          : firstTimestamp - secondTimestamp;
-      });
-  }, [appointments, searchQuery, sortDirection, statusFilter, vehicleFilter]);
-
-  const hasActiveFilters =
-    searchQuery.trim().length > 0 ||
-    statusFilter !== 'all' ||
-    vehicleFilter !== 'all';
-  const isRepairsTab = activeTab === 'repairs';
+  const selectedVehicleOption =
+    vehicleOptions.find((option) => option.value === vehicleFilter) ?? null;
+  const selectedBrandLogo = getBrandLogo(selectedVehicleOption?.brandName);
+  const upcomingEvents = events
+    .filter((event) => getHistoryEventSection(event) === 'upcoming')
+    .sort((first, second) => first.timestamp - second.timestamp);
+  const completedInterventions = events.filter(
+    (event) => event.repair?.statusKey === 'completed'
+  ).length;
+  const latestWorkshopEvent = events
+    .filter((event) => event.repair !== null)
+    .sort((first, second) => second.timestamp - first.timestamp)[0];
 
   useEffect(() => {
     if (cancelAppointment.isSuccess) {
-      setAppointmentToCancel(null);
+      setConfirmCancellation(false);
+      setSelectedEventId(null);
     }
   }, [cancelAppointment.isSuccess]);
 
@@ -302,26 +236,22 @@ export function HistoryScreen() {
     }
   }, [vehicleFilter, vehicleOptions]);
 
-  if (appointmentsQuery.isLoading) {
+  if (historyQuery.isLoading) {
     return (
       <ClientPortalLayout activeRoute="/history">
-        <View style={styles.stateContainer}>
-          <LoadingState message="Chargement de l’historique..." />
-        </View>
+        <HistorySkeleton />
       </ClientPortalLayout>
     );
   }
 
-  if (appointmentsQuery.isError) {
+  if (historyQuery.isError) {
     return (
       <ClientPortalLayout activeRoute="/history">
         <View style={styles.stateContainer}>
           <ErrorState
-            title="Erreur de chargement"
-            message="Impossible de charger votre historique."
-            onRetry={() => {
-              appointmentsQuery.refetch();
-            }}
+            title="Carnet de vie temporairement indisponible"
+            message="Impossible de charger vos rendez-vous et interventions."
+            onRetry={historyQuery.refetch}
           />
         </View>
       </ClientPortalLayout>
@@ -331,315 +261,302 @@ export function HistoryScreen() {
   return (
     <ClientPortalLayout activeRoute="/history">
       <ScrollView
-        style={styles.contentScroll}
+        style={styles.pageScroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator
       >
-        <View style={[styles.header, isNarrow && styles.headerNarrow]}>
-          <View style={styles.headerCopy}>
-            <Text style={styles.eyebrow}>Espace client</Text>
-            <Text style={styles.title}>Historique</Text>
-            <Text style={styles.subtitle}>
-              Consultez vos anciennes demandes de rendez-vous, suivez leur
-              statut et retrouvez les interventions liées à vos véhicules.
-            </Text>
-          </View>
-
-          <Link href="/appointments" asChild>
-            <Pressable
-              accessibilityRole="link"
-              style={({ hovered, pressed }) => [
-                styles.primaryAction,
-                hovered && styles.primaryActionHovered,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.primaryActionText}>Nouveau rendez-vous</Text>
-            </Pressable>
-          </Link>
-        </View>
-
-        <View style={[styles.summaryGrid, isNarrow && styles.stack]}>
-          <SummaryCard
-            detail="Demandes de rendez-vous enregistrées"
-            label="Demandes"
-            value={String(appointments.length)}
-          />
-          <SummaryCard
-            detail="Demandes en attente de confirmation"
-            label="En attente"
-            value={String(pendingCount)}
-          />
-          <SummaryCard
-            detail="Données liées à votre compte client"
-            label="Suivi sécurisé"
-            value="Espace client"
-          />
-        </View>
+        <HistoryHeader
+          completedInterventions={completedInterventions}
+          lastVisit={latestWorkshopEvent?.date ?? 'Aucune visite enregistrée'}
+          nextAppointment={upcomingEvents[0]?.date ?? 'Aucun rendez-vous à venir'}
+          selectedBrandLogo={selectedBrandLogo}
+          selectedVehicleLabel={
+            selectedVehicleOption?.label ?? 'Tous vos véhicules'
+          }
+        />
 
         <HistoryFilters
-          activeTab={activeTab}
           isNarrow={isNarrow}
           searchQuery={searchQuery}
+          secondaryVisible={secondaryFiltersVisible}
           sortDirection={sortDirection}
-          statusFilter={statusFilter}
+          typeFilter={typeFilter}
           vehicleFilter={vehicleFilter}
           vehicleOptions={vehicleOptions}
-          onSearchQueryChange={setSearchQuery}
-          onSortDirectionChange={setSortDirection}
-          onStatusFilterChange={setStatusFilter}
-          onTabChange={setActiveTab}
-          onVehicleFilterChange={setVehicleFilter}
+          yearFilter={yearFilter}
+          yearOptions={yearOptions}
+          onSearchChange={setSearchQuery}
+          onSortChange={setSortDirection}
+          onToggleSecondary={() =>
+            setSecondaryFiltersVisible((current) => !current)
+          }
+          onTypeChange={setTypeFilter}
+          onVehicleChange={setVehicleFilter}
+          onYearChange={setYearFilter}
         />
 
         {cancelAppointment.isSuccess ? (
-          <View style={styles.successBox}>
-            <Text style={styles.successTitle}>Rendez-vous annulé</Text>
-            <Text style={styles.successText}>
-              Le statut a été mis à jour et l’historique a été actualisé.
-            </Text>
-          </View>
+          <FeedbackBanner
+            tone="success"
+            title="Rendez-vous annulé"
+            text="Votre carnet de vie a été actualisé."
+          />
         ) : null}
-
         {cancelAppointment.isError ? (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorTitle}>Annulation impossible</Text>
-            <Text style={styles.errorText}>
-              La mise à jour du rendez-vous a échoué. Veuillez réessayer.
-            </Text>
-          </View>
+          <FeedbackBanner
+            tone="danger"
+            title="Annulation impossible"
+            text="Veuillez réessayer dans quelques instants."
+          />
         ) : null}
 
-        {isRepairsTab ? (
-          <EmptyPanel
-            title="Réparations"
-            text="Aucune réparation terminée à afficher pour le moment."
-          />
-        ) : filteredAppointments.length > 0 ? (
-          <View style={styles.appointmentGrid}>
-            {filteredAppointments.map((appointment) => (
-              <AppointmentCard
-                key={String(appointment.id)}
-                appointment={appointment}
-                isCancelling={
-                  cancelAppointment.isPending &&
-                  String(cancelAppointment.variables) === String(appointment.id)
-                }
-                onCancel={() => {
-                  cancelAppointment.reset();
-                  setAppointmentToCancel(appointment.id);
-                }}
-              />
-            ))}
-          </View>
+        {events.length === 0 ? (
+          <EmptyHistory />
+        ) : filteredEvents.length === 0 ? (
+          <EmptyHistory filtered />
         ) : (
-          <EmptyPanel
-            title={hasActiveFilters ? 'Aucun résultat' : 'Historique vide'}
-            text={
-              hasActiveFilters
-                ? 'Aucun élément ne correspond à vos filtres.'
-                : 'Aucun élément d’historique trouvé.'
-            }
-          />
+          <View style={styles.sections}>
+            {HISTORY_SECTIONS.map((section) =>
+              sectionEvents[section.key].length > 0 ? (
+                <HistorySection
+                  key={section.key}
+                  description={section.description}
+                  events={sectionEvents[section.key]}
+                  isNarrow={isNarrow}
+                  title={section.title}
+                  onOpen={(eventId) => {
+                    cancelAppointment.reset();
+                    setConfirmCancellation(false);
+                    setSelectedEventId(eventId);
+                  }}
+                />
+              ) : null
+            )}
+          </View>
         )}
       </ScrollView>
 
-      <Modal
-        animationType="fade"
-        onRequestClose={() => {
-          if (!cancelAppointment.isPending) {
-            setAppointmentToCancel(null);
+      <EventDetailModal
+        cancelError={cancelAppointment.isError}
+        confirmCancellation={confirmCancellation}
+        event={selectedEvent}
+        isCancelling={cancelAppointment.isPending}
+        isNarrow={isNarrow}
+        onCancelAppointment={() => {
+          if (selectedEvent?.appointment) {
+            cancelAppointment.mutate(selectedEvent.appointment.id);
           }
         }}
-        transparent
-        visible={appointmentToCancel !== null}
-      >
-        <View style={styles.modalOverlay}>
-          <View accessibilityRole="alert" style={styles.confirmationModal}>
-            <Text style={styles.modalEyebrow}>Rendez-vous SMEIA</Text>
-            <Text style={styles.modalTitle}>Confirmer l’annulation</Text>
-            <Text style={styles.modalMessage}>
-              Voulez-vous vraiment annuler ce rendez-vous ? Cette action
-              conservera l’historique dans votre espace client.
-            </Text>
-
-            <View style={[styles.modalActions, isNarrow && styles.stack]}>
-              <Pressable
-                accessibilityRole="button"
-                disabled={cancelAppointment.isPending}
-                onPress={() => {
-                  setAppointmentToCancel(null);
-                }}
-                style={({ hovered, pressed }) => [
-                  styles.keepButton,
-                  hovered &&
-                    !cancelAppointment.isPending &&
-                    styles.keepButtonHovered,
-                  pressed && !cancelAppointment.isPending && styles.pressed,
-                  cancelAppointment.isPending && styles.disabled,
-                ]}
-              >
-                <Text style={styles.keepButtonText}>Garder le rendez-vous</Text>
-              </Pressable>
-
-              <Pressable
-                accessibilityRole="button"
-                disabled={
-                  appointmentToCancel === null || cancelAppointment.isPending
-                }
-                onPress={() => {
-                  if (appointmentToCancel !== null) {
-                    cancelAppointment.mutate(appointmentToCancel);
-                  }
-                }}
-                style={({ hovered, pressed }) => [
-                  styles.confirmCancelButton,
-                  hovered &&
-                    !cancelAppointment.isPending &&
-                    styles.confirmCancelButtonHovered,
-                  pressed && !cancelAppointment.isPending && styles.pressed,
-                  cancelAppointment.isPending && styles.disabled,
-                ]}
-              >
-                <Text style={styles.confirmCancelButtonText}>
-                  {cancelAppointment.isPending
-                    ? 'Annulation...'
-                    : 'Oui, annuler'}
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        onClose={() => {
+          if (!cancelAppointment.isPending) {
+            setConfirmCancellation(false);
+            setSelectedEventId(null);
+          }
+        }}
+        onConfirmCancellation={setConfirmCancellation}
+      />
     </ClientPortalLayout>
   );
 }
 
-type HistoryFiltersProps = {
-  activeTab: HistoryTab;
-  isNarrow: boolean;
-  searchQuery: string;
-  sortDirection: SortDirection;
-  statusFilter: StatusFilter;
-  vehicleFilter: string;
-  vehicleOptions: VehicleFilterOption[];
-  onSearchQueryChange: (value: string) => void;
-  onSortDirectionChange: (value: SortDirection) => void;
-  onStatusFilterChange: (value: StatusFilter) => void;
-  onTabChange: (value: HistoryTab) => void;
-  onVehicleFilterChange: (value: string) => void;
-};
-
-function HistoryFilters({
-  activeTab,
-  isNarrow,
-  searchQuery,
-  sortDirection,
-  statusFilter,
-  vehicleFilter,
-  vehicleOptions,
-  onSearchQueryChange,
-  onSortDirectionChange,
-  onStatusFilterChange,
-  onTabChange,
-  onVehicleFilterChange,
-}: HistoryFiltersProps) {
+function HistoryHeader({
+  completedInterventions,
+  lastVisit,
+  nextAppointment,
+  selectedBrandLogo,
+  selectedVehicleLabel,
+}: {
+  completedInterventions: number;
+  lastVisit: string;
+  nextAppointment: string;
+  selectedBrandLogo: ReturnType<typeof getBrandLogo>;
+  selectedVehicleLabel: string;
+}) {
   return (
-    <View style={styles.filtersPanel}>
-      <View style={styles.tabList}>
-        {historyTabs.map((tab) => (
-          <FilterChip
-            key={tab.value}
-            active={activeTab === tab.value}
-            label={tab.label}
-            onPress={() => {
-              onTabChange(tab.value);
-            }}
-          />
-        ))}
-      </View>
-
-      <View style={[styles.filterRow, isNarrow && styles.stack]}>
-        <View style={styles.searchField}>
-          <Text style={styles.filterLabel}>Recherche</Text>
-          <TextInput
-            accessibilityLabel="Rechercher dans l’historique"
-            onChangeText={onSearchQueryChange}
-            placeholder="Rechercher par véhicule, service, atelier..."
-            placeholderTextColor="#8A97A8"
-            style={styles.searchInput}
-            value={searchQuery}
-          />
+    <View style={styles.header}>
+      <View style={styles.headerTopline}>
+        <View style={styles.headerCopy}>
+          <Text style={styles.eyebrow}>CARNET DE VIE SMEIA</Text>
+          <Text style={styles.title}>Historique de votre véhicule</Text>
+          <Text style={styles.subtitle}>
+            Retrouvez chaque visite, prise en charge et intervention dans une
+            chronologie claire et sécurisée.
+          </Text>
         </View>
-
-        <View style={styles.filterGroup}>
-          <Text style={styles.filterLabel}>Statut</Text>
-          <View style={styles.chipList}>
-            {statusFilterOptions.map((option) => (
-              <FilterChip
-                key={option.value}
-                active={statusFilter === option.value}
-                label={option.label}
-                onPress={() => {
-                  onStatusFilterChange(option.value);
-                }}
+        <View style={styles.filteredVehicle}>
+          <View
+            style={[
+              styles.filteredVehicleLogo,
+              selectedBrandLogo &&
+                'needsLightSurface' in selectedBrandLogo &&
+                selectedBrandLogo.needsLightSurface &&
+                styles.filteredVehicleLogoLight,
+            ]}
+          >
+            {selectedBrandLogo ? (
+              <Image
+                accessibilityLabel={`Logo ${selectedBrandLogo.name}`}
+                contentFit="contain"
+                source={selectedBrandLogo.source}
+                style={styles.brandLogo}
               />
-            ))}
+            ) : (
+              <SymbolView
+                name={{ ios: 'car', android: 'directions_car', web: 'directions_car' }}
+                size={27}
+                tintColor="#8FB7E8"
+              />
+            )}
+          </View>
+          <View style={styles.filteredVehicleCopy}>
+            <Text style={styles.filteredVehicleLabel}>Véhicule affiché</Text>
+            <Text numberOfLines={2} style={styles.filteredVehicleValue}>
+              {selectedVehicleLabel}
+            </Text>
           </View>
         </View>
       </View>
-
-      <View style={[styles.filterRow, isNarrow && styles.stack]}>
-        <View style={styles.filterGroup}>
-          <Text style={styles.filterLabel}>Véhicule</Text>
-          <View style={styles.chipList}>
-            <FilterChip
-              active={vehicleFilter === 'all'}
-              label="Tous les véhicules"
-              onPress={() => {
-                onVehicleFilterChange('all');
-              }}
-            />
-            {vehicleOptions.map((option) => (
-              <FilterChip
-                key={option.value}
-                active={vehicleFilter === option.value}
-                label={option.label}
-                onPress={() => {
-                  onVehicleFilterChange(option.value);
-                }}
-              />
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.filterGroup}>
-          <Text style={styles.filterLabel}>Tri</Text>
-          <View style={styles.chipList}>
-            {sortOptions.map((option) => (
-              <FilterChip
-                key={option.value}
-                active={sortDirection === option.value}
-                label={option.label}
-                onPress={() => {
-                  onSortDirectionChange(option.value);
-                }}
-              />
-            ))}
-          </View>
-        </View>
+      <View style={styles.metrics}>
+        <Metric
+          icon={{ ios: 'calendar', android: 'event', web: 'event' }}
+          label="Prochain rendez-vous"
+          value={nextAppointment}
+        />
+        <Metric
+          icon={{ ios: 'checkmark.circle', android: 'task_alt', web: 'task_alt' }}
+          label="Interventions réalisées"
+          value={String(completedInterventions)}
+        />
+        <Metric
+          icon={{ ios: 'clock', android: 'schedule', web: 'schedule' }}
+          label="Dernière visite atelier"
+          value={lastVisit}
+        />
       </View>
     </View>
   );
 }
 
-type FilterChipProps = {
-  active: boolean;
-  label: string;
-  onPress: () => void;
-};
+function Metric({ icon, label, value }: { icon: SymbolName; label: string; value: string }) {
+  return (
+    <View style={styles.metric}>
+      <View style={styles.metricIcon}>
+        <SymbolView name={icon} size={17} tintColor="#8FB7E8" />
+      </View>
+      <View style={styles.metricCopy}>
+        <Text style={styles.metricLabel}>{label}</Text>
+        <Text numberOfLines={2} style={styles.metricValue}>{value}</Text>
+      </View>
+    </View>
+  );
+}
 
-function FilterChip({ active, label, onPress }: FilterChipProps) {
+function HistoryFilters({
+  isNarrow,
+  searchQuery,
+  secondaryVisible,
+  sortDirection,
+  typeFilter,
+  vehicleFilter,
+  vehicleOptions,
+  yearFilter,
+  yearOptions,
+  onSearchChange,
+  onSortChange,
+  onToggleSecondary,
+  onTypeChange,
+  onVehicleChange,
+  onYearChange,
+}: {
+  isNarrow: boolean;
+  searchQuery: string;
+  secondaryVisible: boolean;
+  sortDirection: SortDirection;
+  typeFilter: HistoryTypeFilter;
+  vehicleFilter: string;
+  vehicleOptions: Array<{ label: string; value: string }>;
+  yearFilter: string;
+  yearOptions: string[];
+  onSearchChange: (value: string) => void;
+  onSortChange: (value: SortDirection) => void;
+  onToggleSecondary: () => void;
+  onTypeChange: (value: HistoryTypeFilter) => void;
+  onVehicleChange: (value: string) => void;
+  onYearChange: (value: string) => void;
+}) {
+  const showSecondary = !isNarrow || secondaryVisible;
+  return (
+    <View style={styles.filters}>
+      <View style={styles.primaryFilters}>
+        <View style={styles.searchField}>
+          <SymbolView
+            name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}
+            size={18}
+            tintColor="#6B7788"
+          />
+          <TextInput
+            accessibilityLabel="Rechercher dans le carnet de vie"
+            onChangeText={onSearchChange}
+            placeholder="Marque, immatriculation, service, atelier..."
+            placeholderTextColor="#8A97A8"
+            style={styles.searchInput}
+            value={searchQuery}
+          />
+        </View>
+        <View style={styles.typeTabs}>
+          <FilterChip active={typeFilter === 'all'} label="Tous" onPress={() => onTypeChange('all')} />
+          <FilterChip active={typeFilter === 'appointments'} label="Rendez-vous" onPress={() => onTypeChange('appointments')} />
+          <FilterChip active={typeFilter === 'repairs'} label="Réparations" onPress={() => onTypeChange('repairs')} />
+        </View>
+        {isNarrow ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={onToggleSecondary}
+            style={({ pressed }) => [styles.filterToggle, pressed && styles.pressed]}
+          >
+            <SymbolView
+              name={{ ios: 'line.3.horizontal.decrease', android: 'filter_list', web: 'filter_list' }}
+              size={17}
+              tintColor="#2F5FA6"
+            />
+            <Text style={styles.filterToggleText}>Filtres</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {showSecondary ? (
+        <View style={styles.secondaryFilters}>
+          <FilterGroup label="Véhicule">
+            <FilterChip active={vehicleFilter === 'all'} label="Tous" onPress={() => onVehicleChange('all')} />
+            {vehicleOptions.map((option) => (
+              <FilterChip key={option.value} active={vehicleFilter === option.value} label={option.label} onPress={() => onVehicleChange(option.value)} />
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Année">
+            <FilterChip active={yearFilter === 'all'} label="Toutes" onPress={() => onYearChange('all')} />
+            {yearOptions.map((year) => (
+              <FilterChip key={year} active={yearFilter === year} label={year} onPress={() => onYearChange(year)} />
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Tri">
+            <FilterChip active={sortDirection === 'desc'} label="Plus récent" onPress={() => onSortChange('desc')} />
+            <FilterChip active={sortDirection === 'asc'} label="Plus ancien" onPress={() => onSortChange('asc')} />
+          </FilterGroup>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function FilterGroup({ children, label }: { children: React.ReactNode; label: string }) {
+  return (
+    <View style={styles.filterGroup}>
+      <Text style={styles.filterLabel}>{label}</Text>
+      <View style={styles.chips}>{children}</View>
+    </View>
+  );
+}
+
+function FilterChip({ active, label, onPress }: { active: boolean; label: string; onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="button"
@@ -651,681 +568,484 @@ function FilterChip({ active, label, onPress }: FilterChipProps) {
         pressed && styles.pressed,
       ]}
     >
-      <Text
-        numberOfLines={1}
-        style={[styles.chipText, active && styles.chipTextActive]}
-      >
-        {label}
-      </Text>
+      <Text numberOfLines={1} style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
     </Pressable>
   );
 }
 
-type SummaryCardProps = {
-  detail: string;
-  label: string;
-  value: string;
-};
-
-function SummaryCard({ detail, label, value }: SummaryCardProps) {
+function HistorySection({
+  description,
+  events,
+  isNarrow,
+  title,
+  onOpen,
+}: {
+  description: string;
+  events: HistoryEvent[];
+  isNarrow: boolean;
+  title: string;
+  onOpen: (eventId: string) => void;
+}) {
   return (
-    <View style={styles.summaryCard}>
-      <Text style={styles.summaryLabel}>{label}</Text>
-      <Text style={styles.summaryValue}>{value}</Text>
-      <Text style={styles.summaryDetail}>{detail}</Text>
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <View style={styles.sectionCopy}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+          <Text style={styles.sectionDescription}>{description}</Text>
+        </View>
+        <View style={styles.sectionCount}>
+          <Text style={styles.sectionCountText}>{events.length}</Text>
+        </View>
+      </View>
+      <View style={styles.timeline}>
+        {events.map((event, index) => (
+          <HistoryEventRow
+            key={event.id}
+            event={event}
+            isLast={index === events.length - 1}
+            isNarrow={isNarrow}
+            onOpen={() => onOpen(event.id)}
+          />
+        ))}
+      </View>
     </View>
   );
 }
 
-type AppointmentCardProps = {
-  appointment: AppointmentListItem;
-  isCancelling: boolean;
-  onCancel: () => void;
-};
-
-function AppointmentCard({
-  appointment,
-  isCancelling,
-  onCancel,
-}: AppointmentCardProps) {
-  const statusKey = getStatusKey(appointment.status);
-  const isPending = statusKey === 'pending';
-  const isCancelled = statusKey === 'cancelled';
-  const isConfirmed = statusKey === 'confirmed';
-  const isCompleted = statusKey === 'completed';
-  const canCancel = canCancelAppointment(appointment);
-
+function HistoryEventRow({
+  event,
+  isLast,
+  isNarrow,
+  onOpen,
+}: {
+  event: HistoryEvent;
+  isLast: boolean;
+  isNarrow: boolean;
+  onOpen: () => void;
+}) {
   return (
-    <View style={styles.appointmentCard}>
-      <View style={styles.cardHeader}>
-        <View style={styles.cardHeaderCopy}>
-          <Text style={styles.vehicleName}>
-            {appointment.vehicle || 'Véhicule non renseigné'}
-          </Text>
-          <Text style={styles.registrationNumber}>
-            {appointment.registrationNumber || 'Immatriculation non renseignée'}
-          </Text>
+    <View style={[styles.eventRow, isNarrow && styles.eventRowNarrow]}>
+      {!isNarrow ? (
+        <View style={styles.eventDateColumn}>
+          <Text style={styles.eventDate}>{event.date}</Text>
+          {event.time ? <Text style={styles.eventTime}>{event.time}</Text> : null}
         </View>
-        <View
-          style={[
-            styles.statusBadge,
-            isPending && styles.statusPending,
-            isCancelled && styles.statusCancelled,
-            isConfirmed && styles.statusConfirmed,
-            isCompleted && styles.statusCompleted,
-          ]}
-        >
-          <Text
-            style={[
-              styles.statusText,
-              isPending && styles.statusTextPending,
-              isCancelled && styles.statusTextCancelled,
-              isConfirmed && styles.statusTextConfirmed,
-              isCompleted && styles.statusTextCompleted,
-            ]}
-          >
-            {getStatusLabel(appointment.status)}
-          </Text>
+      ) : null}
+      <View style={styles.timelineRail}>
+        <View style={[styles.timelineDot, toneStyles[event.statusTone].dot]}>
+          <SymbolView name={getEventIcon(event)} size={15} tintColor="#FFFFFF" />
         </View>
+        {!isLast ? <View style={styles.timelineLine} /> : null}
       </View>
-
-      <View style={styles.detailGrid}>
-        <DetailLine
-          label="Service"
-          value={appointment.serviceType || 'Service non renseigné'}
-        />
-        <DetailLine
-          label="Atelier"
-          value={appointment.workshop || 'Atelier non renseigné'}
-        />
-        <DetailLine
-          label="Date"
-          value={appointment.requestedDate || 'Date non renseignée'}
-        />
-        <DetailLine
-          label="Heure"
-          value={appointment.requestedTime || 'Heure non renseignée'}
-        />
-        <DetailLine
-          label="Commentaire"
-          value={appointment.comment || 'Aucun commentaire'}
-        />
-      </View>
-
-      {canCancel ? (
+      <View style={[styles.eventCard, isNarrow && styles.eventCardNarrow]}>
+        <View style={styles.eventMain}>
+          <View style={styles.eventTopline}>
+            <Text style={styles.eventType}>{getEventTypeLabel(event.type)}</Text>
+            <StatusBadge label={event.statusLabel} tone={event.statusTone} />
+          </View>
+          {isNarrow ? (
+            <Text style={styles.eventMobileDate}>
+              {event.date}{event.time ? ` • ${event.time}` : ''}
+            </Text>
+          ) : null}
+          <Text style={styles.eventVehicle}>{event.vehicleLabel}</Text>
+          <View style={styles.eventDetails}>
+            <EventDetail icon={{ ios: 'wrench', android: 'build', web: 'build' }} value={event.serviceLabel} />
+            <EventDetail icon={{ ios: 'mappin', android: 'location_on', web: 'location_on' }} value={event.workshopLabel} />
+          </View>
+        </View>
         <Pressable
           accessibilityRole="button"
-          disabled={isCancelling}
-          onPress={onCancel}
+          onPress={onOpen}
           style={({ hovered, pressed }) => [
-            styles.cancelButton,
-            hovered && !isCancelling && styles.cancelButtonHovered,
-            pressed && !isCancelling && styles.pressed,
-            isCancelling && styles.disabled,
+            styles.detailAction,
+            hovered && styles.detailActionHovered,
+            pressed && styles.pressed,
           ]}
         >
-          <Text style={styles.cancelButtonText}>
-            {isCancelling ? 'Annulation...' : 'Annuler le rendez-vous'}
-          </Text>
+          <Text style={styles.detailActionText}>Voir le détail</Text>
+          <SymbolView
+            name={{ ios: 'arrow.right', android: 'arrow_forward', web: 'arrow_forward' }}
+            size={15}
+            tintColor="#2F5FA6"
+          />
         </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function EventDetail({ icon, value }: { icon: SymbolName; value: string }) {
+  return (
+    <View style={styles.eventDetail}>
+      <SymbolView name={icon} size={15} tintColor="#6B7788" />
+      <Text numberOfLines={2} style={styles.eventDetailText}>{value}</Text>
+    </View>
+  );
+}
+
+function StatusBadge({ label, tone }: { label: string; tone: HistoryStatusTone }) {
+  return (
+    <View style={[styles.statusBadge, toneStyles[tone].badge]}>
+      <Text style={[styles.statusBadgeText, toneStyles[tone].text]}>{label}</Text>
+    </View>
+  );
+}
+
+function EventDetailModal({
+  cancelError,
+  confirmCancellation,
+  event,
+  isCancelling,
+  isNarrow,
+  onCancelAppointment,
+  onClose,
+  onConfirmCancellation,
+}: {
+  cancelError: boolean;
+  confirmCancellation: boolean;
+  event: HistoryEvent | null;
+  isCancelling: boolean;
+  isNarrow: boolean;
+  onCancelAppointment: () => void;
+  onClose: () => void;
+  onConfirmCancellation: (value: boolean) => void;
+}) {
+  const details = event
+    ? [
+        ['Référence SAV', event.referenceLabel],
+        ['Véhicule', event.vehicleLabel],
+        ['Atelier', event.workshopLabel],
+        ['Prestation', event.serviceLabel],
+        ['Date et heure', `${event.date}${event.time ? ` • ${event.time}` : ''}`],
+        ['Commentaire client', event.comment],
+        ['Motif d’annulation', event.appointment?.cancellationReason],
+        ['Arrivée confirmée', formatDetailDate(event.appointment?.arrivalConfirmedAt)],
+        ['Diagnostic', event.repair?.diagnosticLabel],
+        ['Travaux effectués', event.repair?.workDoneLabel],
+        ['Solution', event.repair?.solutionLabel],
+        ['Recommandations', event.repair?.recommendationsLabel],
+        ['Coût final', event.repair?.finalCostLabel],
+      ].filter((item): item is [string, string] => Boolean(item[1]))
+    : [];
+
+  return (
+    <Modal
+      animationType="slide"
+      onRequestClose={onClose}
+      transparent={!isNarrow}
+      visible={event !== null}
+    >
+      <View style={[styles.drawerOverlay, isNarrow && styles.drawerOverlayNarrow]}>
+        <View style={[styles.drawer, isNarrow && styles.drawerNarrow]}>
+          {event ? (
+            <>
+              <View style={styles.drawerHeader}>
+                <View style={styles.drawerHeaderCopy}>
+                  <Text style={styles.drawerEyebrow}>{getEventTypeLabel(event.type)}</Text>
+                  <Text style={styles.drawerTitle}>{event.vehicleLabel}</Text>
+                </View>
+                <Pressable
+                  accessibilityLabel="Fermer le détail"
+                  accessibilityRole="button"
+                  onPress={onClose}
+                  style={({ hovered, pressed }) => [
+                    styles.closeButton,
+                    hovered && styles.closeButtonHovered,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <SymbolView
+                    name={{ ios: 'xmark', android: 'close', web: 'close' }}
+                    size={19}
+                    tintColor="#15294D"
+                  />
+                </Pressable>
+              </View>
+              <ScrollView contentContainerStyle={styles.drawerContent}>
+                <View style={styles.drawerStatusRow}>
+                  <StatusBadge label={event.statusLabel} tone={event.statusTone} />
+                  <Text style={styles.drawerDate}>{event.date}</Text>
+                </View>
+                <View style={styles.detailList}>
+                  {details.map(([label, value]) => (
+                    <View key={label} style={styles.detailListItem}>
+                      <Text style={styles.detailListLabel}>{label}</Text>
+                      <Text style={styles.detailListValue}>{value}</Text>
+                    </View>
+                  ))}
+                </View>
+                {event.type === 'serviceJourney' ? (
+                  <JourneyTimeline event={event} />
+                ) : null}
+                {canCancelEvent(event) ? (
+                  <View style={styles.cancelArea}>
+                    {!confirmCancellation ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() => onConfirmCancellation(true)}
+                        style={({ hovered, pressed }) => [
+                          styles.cancelButton,
+                          hovered && styles.cancelButtonHovered,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text style={styles.cancelButtonText}>Annuler ce rendez-vous</Text>
+                      </Pressable>
+                    ) : (
+                      <View style={styles.cancelConfirmation}>
+                        <Text style={styles.cancelConfirmationTitle}>Confirmer l’annulation ?</Text>
+                        <Text style={styles.cancelConfirmationText}>
+                          Le rendez-vous restera visible dans votre carnet de vie.
+                        </Text>
+                        <View style={styles.cancelActions}>
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={isCancelling}
+                            onPress={() => onConfirmCancellation(false)}
+                            style={styles.keepButton}
+                          >
+                            <Text style={styles.keepButtonText}>Conserver</Text>
+                          </Pressable>
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={isCancelling}
+                            onPress={onCancelAppointment}
+                            style={[styles.confirmCancelButton, isCancelling && styles.disabled]}
+                          >
+                            <Text style={styles.confirmCancelButtonText}>
+                              {isCancelling ? 'Annulation...' : 'Confirmer'}
+                            </Text>
+                          </Pressable>
+                        </View>
+                        {cancelError ? (
+                          <Text style={styles.cancelError}>L’annulation a échoué. Réessayez.</Text>
+                        ) : null}
+                      </View>
+                    )}
+                  </View>
+                ) : null}
+              </ScrollView>
+            </>
+          ) : null}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function JourneyTimeline({ event }: { event: HistoryEvent }) {
+  const progress = getServiceJourneyProgress(event);
+  return (
+    <View style={styles.journeyPanel}>
+      <Text style={styles.journeyTitle}>Parcours de votre visite</Text>
+      <View style={styles.journeySteps}>
+        {JOURNEY_STEPS.map((step, index) => {
+          const complete = index <= progress.completedThrough;
+          const active = index === progress.activeIndex && !complete;
+          return (
+            <View key={step} style={styles.journeyStep}>
+              <View style={[styles.journeyDot, complete && styles.journeyDotComplete, active && styles.journeyDotActive]}>
+                {complete ? (
+                  <SymbolView name={{ ios: 'checkmark', android: 'check', web: 'check' }} size={12} tintColor="#FFFFFF" />
+                ) : null}
+              </View>
+              <Text style={[styles.journeyLabel, complete && styles.journeyLabelComplete, active && styles.journeyLabelActive]}>{step}</Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function EmptyHistory({ filtered = false }: { filtered?: boolean }) {
+  return (
+    <View style={styles.emptyPanel}>
+      <View style={styles.emptyIcon}>
+        <SymbolView
+          name={{ ios: 'clock.arrow.circlepath', android: 'history', web: 'history' }}
+          size={27}
+          tintColor="#2F5FA6"
+        />
+      </View>
+      <Text style={styles.emptyTitle}>{filtered ? 'Aucun résultat' : 'Votre carnet commence ici'}</Text>
+      <Text style={styles.emptyText}>
+        {filtered
+          ? 'Aucun événement ne correspond aux filtres sélectionnés.'
+          : 'Votre carnet de vie SMEIA se construira après votre première visite.'}
+      </Text>
+      {!filtered ? (
+        <Link href="/appointments" asChild>
+          <Pressable accessibilityRole="link" style={styles.emptyAction}>
+            <Text style={styles.emptyActionText}>Prendre rendez-vous</Text>
+          </Pressable>
+        </Link>
       ) : null}
     </View>
   );
 }
 
-type DetailLineProps = {
-  label: string;
-  value: string;
-};
-
-function DetailLine({ label, value }: DetailLineProps) {
+function FeedbackBanner({ tone, title, text }: { tone: 'success' | 'danger'; title: string; text: string }) {
   return (
-    <View style={styles.detailLine}>
-      <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={styles.detailValue}>{value}</Text>
+    <View style={[styles.feedback, tone === 'success' ? styles.feedbackSuccess : styles.feedbackDanger]}>
+      <Text style={styles.feedbackTitle}>{title}</Text>
+      <Text style={styles.feedbackText}>{text}</Text>
     </View>
   );
 }
 
-type EmptyPanelProps = {
-  title: string;
-  text: string;
-};
-
-function EmptyPanel({ title, text }: EmptyPanelProps) {
+function HistorySkeleton() {
   return (
-    <View style={styles.emptyPanel}>
-      <Text style={styles.emptyTitle}>{title}</Text>
-      <Text style={styles.emptyText}>{text}</Text>
+    <View style={styles.skeletonPage} accessibilityLabel="Chargement du carnet de vie">
+      <View style={styles.skeletonHeader} />
+      <View style={styles.skeletonFilters} />
+      {[0, 1, 2].map((item) => (
+        <View key={item} style={styles.skeletonEvent} />
+      ))}
     </View>
   );
 }
+
+const toneStyles: Record<
+  HistoryStatusTone,
+  { badge: object; dot: object; text: object }
+> = {
+  info: { badge: { backgroundColor: '#EAF2FC' }, dot: { backgroundColor: '#4D7FB8' }, text: { color: '#2F5FA6' } },
+  warning: { badge: { backgroundColor: '#FFF4E5' }, dot: { backgroundColor: '#C98224' }, text: { color: '#9A5E12' } },
+  active: { badge: { backgroundColor: '#E4EEFB' }, dot: { backgroundColor: '#2F5FA6' }, text: { color: '#244B86' } },
+  success: { badge: { backgroundColor: '#EAF6F1' }, dot: { backgroundColor: '#2F7D67' }, text: { color: '#236651' } },
+  danger: { badge: { backgroundColor: '#FCECEC' }, dot: { backgroundColor: '#B85C5C' }, text: { color: '#964545' } },
+  ready: { badge: { backgroundColor: '#DFF3EA' }, dot: { backgroundColor: '#187A55' }, text: { color: '#146545' } },
+  neutral: { badge: { backgroundColor: '#EEF2F7' }, dot: { backgroundColor: '#7A8798' }, text: { color: '#5A6470' } },
+};
 
 const styles = StyleSheet.create({
-  stateContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    padding: spacing.lg,
-  },
-
-  contentScroll: {
-    flex: 1,
-  },
-
-  content: {
-    gap: spacing.lg,
-    padding: spacing.sm,
-    paddingBottom: spacing.lg,
-  },
-
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.lg,
-    padding: spacing.xl,
-    borderWidth: 1,
-    borderColor: 'rgba(130, 145, 166, 0.24)',
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.82)',
-  },
-
-  headerNarrow: {
-    alignItems: 'stretch',
-    flexDirection: 'column',
-  },
-
-  headerCopy: {
-    flex: 1,
-    gap: spacing.xs,
-  },
-
-  eyebrow: {
-    color: '#1E5AA8',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-    letterSpacing: 0,
-  },
-
-  title: {
-    color: '#071832',
-    fontSize: typography.fontSize.xxl,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  subtitle: {
-    maxWidth: 780,
-    color: '#526174',
-    fontSize: typography.fontSize.md,
-    lineHeight: typography.lineHeight.md,
-  },
-
-  primaryAction: {
-    minHeight: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 14,
-    backgroundColor: '#0F4C9A',
-  },
-
-  primaryActionHovered: {
-    backgroundColor: '#0B3E82',
-  },
-
-  primaryActionText: {
-    color: '#FFFFFF',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  pressed: {
-    opacity: 0.86,
-  },
-
-  disabled: {
-    opacity: 0.5,
-  },
-
-  summaryGrid: {
-    flexDirection: 'row',
-    gap: spacing.md,
-  },
-
-  stack: {
-    flexDirection: 'column',
-  },
-
-  summaryCard: {
-    flex: 1,
-    minHeight: 126,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(130, 145, 166, 0.24)',
-    borderRadius: 22,
-    backgroundColor: '#FFFFFF',
-    gap: spacing.sm,
-  },
-
-  summaryLabel: {
-    color: '#657386',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
-  },
-
-  summaryValue: {
-    color: '#071832',
-    fontSize: typography.fontSize.lg,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  summaryDetail: {
-    color: '#526174',
-    fontSize: typography.fontSize.sm,
-    lineHeight: typography.lineHeight.sm,
-  },
-
-  filtersPanel: {
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(130, 145, 166, 0.24)',
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-    gap: spacing.md,
-  },
-
-  tabList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-
-  filterRow: {
-    flexDirection: 'row',
-    gap: spacing.md,
-  },
-
-  searchField: {
-    flex: 1.15,
-    minWidth: 260,
-    gap: spacing.sm,
-  },
-
-  filterGroup: {
-    flex: 1,
-    minWidth: 240,
-    gap: spacing.sm,
-  },
-
-  filterLabel: {
-    color: '#10243F',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
-  },
-
-  searchInput: {
-    minHeight: 48,
-    paddingVertical: 12,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: '#D5DFEC',
-    borderRadius: 14,
-    backgroundColor: '#FFFFFF',
-    color: '#071832',
-    fontSize: typography.fontSize.md,
-  },
-
-  chipList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-
-  chip: {
-    maxWidth: '100%',
-    minHeight: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: '#D7DFEA',
-    borderRadius: 999,
-    backgroundColor: '#FFFFFF',
-  },
-
-  chipActive: {
-    borderColor: '#0F4C9A',
-    backgroundColor: '#EAF2FC',
-  },
-
-  chipHovered: {
-    borderColor: '#B8C9DF',
-    backgroundColor: '#F8FAFC',
-  },
-
-  chipText: {
-    color: '#526174',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
-  },
-
-  chipTextActive: {
-    color: '#0F4C9A',
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  appointmentGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.md,
-  },
-
-  appointmentCard: {
-    flexGrow: 1,
-    flexBasis: 360,
-    minWidth: 300,
-    maxWidth: 560,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(130, 145, 166, 0.24)',
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.94)',
-    gap: spacing.lg,
-    shadowColor: '#071832',
-    shadowOffset: {
-      width: 0,
-      height: 14,
-    },
-    shadowOpacity: 0.07,
-    shadowRadius: 26,
-  },
-
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-  },
-
-  cardHeaderCopy: {
-    flex: 1,
-    gap: spacing.xs,
-  },
-
-  vehicleName: {
-    color: '#071832',
-    fontSize: typography.fontSize.lg,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  registrationNumber: {
-    color: '#657386',
-    fontSize: typography.fontSize.sm,
-  },
-
-  statusBadge: {
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    borderWidth: 1,
-    borderColor: '#D7DFEA',
-    borderRadius: 999,
-    backgroundColor: '#F8FAFC',
-  },
-
-  statusPending: {
-    borderColor: '#E8CE98',
-    backgroundColor: '#FFF8E8',
-  },
-
-  statusConfirmed: {
-    borderColor: '#AFCBEA',
-    backgroundColor: '#EEF6FF',
-  },
-
-  statusCancelled: {
-    borderColor: '#E4B8B8',
-    backgroundColor: '#FFF3F3',
-  },
-
-  statusCompleted: {
-    borderColor: '#B7D5C0',
-    backgroundColor: '#F0F9F3',
-  },
-
-  statusText: {
-    color: '#526174',
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  statusTextPending: {
-    color: '#9A6700',
-  },
-
-  statusTextConfirmed: {
-    color: '#0F4C9A',
-  },
-
-  statusTextCancelled: {
-    color: '#B42318',
-  },
-
-  statusTextCompleted: {
-    color: '#166534',
-  },
-
-  detailGrid: {
-    gap: spacing.sm,
-  },
-
-  detailLine: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    paddingVertical: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: '#EEF2F7',
-  },
-
-  detailLabel: {
-    color: '#657386',
-    fontSize: typography.fontSize.sm,
-  },
-
-  detailValue: {
-    flex: 1,
-    color: '#071832',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.semiBold,
-    textAlign: 'right',
-  },
-
-  cancelButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: '#E3B6B2',
-    borderRadius: 14,
-    backgroundColor: '#FFF8F7',
-  },
-
-  cancelButtonHovered: {
-    borderColor: '#D98F88',
-    backgroundColor: '#FFF1EF',
-  },
-
-  cancelButtonText: {
-    color: '#B42318',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  modalOverlay: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.lg,
-    backgroundColor: 'rgba(7, 24, 50, 0.48)',
-  },
-
-  confirmationModal: {
-    width: '100%',
-    maxWidth: 500,
-    padding: spacing.xl,
-    borderWidth: 1,
-    borderColor: '#D8E3F1',
-    borderRadius: 24,
-    backgroundColor: '#FFFFFF',
-    gap: spacing.md,
-    shadowColor: '#071832',
-    shadowOffset: {
-      width: 0,
-      height: 22,
-    },
-    shadowOpacity: 0.24,
-    shadowRadius: 42,
-    elevation: 12,
-  },
-
-  modalEyebrow: {
-    color: '#1E5AA8',
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  modalTitle: {
-    color: '#071832',
-    fontSize: typography.fontSize.xl,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  modalMessage: {
-    color: '#526174',
-    fontSize: typography.fontSize.md,
-    lineHeight: typography.lineHeight.md,
-  },
-
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: spacing.sm,
-    marginTop: spacing.sm,
-  },
-
-  keepButton: {
-    minHeight: 46,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: '#C8D5E6',
-    borderRadius: 14,
-    backgroundColor: '#FFFFFF',
-  },
-
-  keepButtonHovered: {
-    backgroundColor: '#F4F8FD',
-  },
-
-  keepButtonText: {
-    color: '#10243F',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  confirmCancelButton: {
-    minHeight: 46,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: 14,
-    backgroundColor: '#B42318',
-    shadowColor: '#B42318',
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
-    shadowOpacity: 0.2,
-    shadowRadius: 14,
-  },
-
-  confirmCancelButtonHovered: {
-    backgroundColor: '#922018',
-  },
-
-  confirmCancelButtonText: {
-    color: '#FFFFFF',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  successBox: {
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: '#B7D5C0',
-    borderRadius: 16,
-    backgroundColor: '#F0F9F3',
-    gap: spacing.xs,
-  },
-
-  successTitle: {
-    color: '#166534',
-    fontSize: typography.fontSize.md,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  successText: {
-    color: '#2F6F45',
-    fontSize: typography.fontSize.sm,
-    lineHeight: typography.lineHeight.sm,
-  },
-
-  errorBox: {
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: '#E9B8B8',
-    borderRadius: 16,
-    backgroundColor: '#FFF5F5',
-    gap: spacing.xs,
-  },
-
-  errorTitle: {
-    color: '#B42318',
-    fontSize: typography.fontSize.md,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  errorText: {
-    color: '#8F2D24',
-    fontSize: typography.fontSize.sm,
-    lineHeight: typography.lineHeight.sm,
-  },
-
-  emptyPanel: {
-    padding: spacing.xl,
-    borderWidth: 1,
-    borderColor: '#D8E3F1',
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    gap: spacing.sm,
-  },
-
-  emptyTitle: {
-    color: '#071832',
-    fontSize: typography.fontSize.lg,
-    fontWeight: typography.fontWeight.bold,
-  },
-
-  emptyText: {
-    color: '#526174',
-    fontSize: typography.fontSize.md,
-    lineHeight: typography.lineHeight.md,
-  },
+  stateContainer: { flex: 1, justifyContent: 'center', padding: spacing.lg },
+  pageScroll: { flex: 1, backgroundColor: '#F4F6FA' },
+  content: { width: '100%', maxWidth: 1280, alignSelf: 'center', gap: spacing.lg, padding: spacing.md, paddingBottom: spacing.xxl },
+  header: { gap: spacing.lg, padding: spacing.lg, borderWidth: 1, borderColor: '#26344C', borderRadius: 20, backgroundColor: '#0B1220' },
+  headerTopline: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: spacing.lg },
+  headerCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
+  eyebrow: { color: '#8FB7E8', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  title: { color: '#FFFFFF', fontSize: typography.fontSize.xxl, fontWeight: typography.fontWeight.bold },
+  subtitle: { maxWidth: 720, color: '#D9E5F5', fontSize: typography.fontSize.sm, lineHeight: typography.lineHeight.sm },
+  filteredVehicle: { width: 290, maxWidth: '100%', flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md, borderWidth: 1, borderColor: '#30415D', borderRadius: 16, backgroundColor: '#141F33' },
+  filteredVehicleLogo: { width: 50, height: 44, alignItems: 'center', justifyContent: 'center', padding: spacing.xs },
+  filteredVehicleLogoLight: { borderRadius: 10, backgroundColor: '#FFFFFF' },
+  brandLogo: { width: '100%', height: '100%' },
+  filteredVehicleCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
+  filteredVehicleLabel: { color: '#8FA0B8', fontSize: typography.fontSize.xs },
+  filteredVehicleValue: { color: '#FFFFFF', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  metrics: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  metric: { flexGrow: 1, flexShrink: 1, flexBasis: 250, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: '#26344C', borderRadius: 14, backgroundColor: '#101A2C' },
+  metricIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#172A45' },
+  metricCopy: { flex: 1, minWidth: 0, gap: 2 },
+  metricLabel: { color: '#8FA0B8', fontSize: typography.fontSize.xs },
+  metricValue: { color: '#FFFFFF', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  filters: { gap: spacing.md, padding: spacing.md, borderWidth: 1, borderColor: '#E6EAF2', borderRadius: 18, backgroundColor: '#FFFFFF' },
+  primaryFilters: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: spacing.sm },
+  searchField: { flexGrow: 1, flexShrink: 1, flexBasis: 300, minWidth: 0, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, borderWidth: 1, borderColor: '#D8E2F0', borderRadius: 12, backgroundColor: '#F8FAFC' },
+  searchInput: { flex: 1, minWidth: 0, color: '#15294D', fontSize: typography.fontSize.sm },
+  typeTabs: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  filterToggle: { minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.sm, borderRadius: 10, backgroundColor: '#EDF4FF' },
+  filterToggleText: { color: '#2F5FA6', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  secondaryFilters: { gap: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: '#EEF2F7' },
+  filterGroup: { gap: spacing.xs },
+  filterLabel: { color: '#5A6470', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  chip: { maxWidth: 230, minHeight: 34, justifyContent: 'center', paddingVertical: spacing.xs, paddingHorizontal: spacing.sm, borderWidth: 1, borderColor: '#D8E2F0', borderRadius: 10, backgroundColor: '#FFFFFF' },
+  chipActive: { borderColor: '#2F5FA6', backgroundColor: '#2F5FA6' },
+  chipHovered: { backgroundColor: '#F4F8FD' },
+  chipText: { color: '#5A6470', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.semiBold },
+  chipTextActive: { color: '#FFFFFF' },
+  sections: { gap: spacing.xl },
+  section: { gap: spacing.md },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
+  sectionCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
+  sectionTitle: { color: '#15294D', fontSize: typography.fontSize.lg, fontWeight: typography.fontWeight.bold },
+  sectionDescription: { color: '#5A6470', fontSize: typography.fontSize.sm },
+  sectionCount: { minWidth: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 17, backgroundColor: '#EAF2FC' },
+  sectionCountText: { color: '#2F5FA6', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  timeline: { gap: 0 },
+  eventRow: { flexDirection: 'row', alignItems: 'stretch' },
+  eventRowNarrow: { paddingLeft: 0 },
+  eventDateColumn: { width: 118, alignItems: 'flex-end', gap: spacing.xs, paddingTop: spacing.md, paddingRight: spacing.md },
+  eventDate: { color: '#15294D', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold, textAlign: 'right' },
+  eventTime: { color: '#5A6470', fontSize: typography.fontSize.xs },
+  timelineRail: { width: 34, alignItems: 'center' },
+  timelineDot: { zIndex: 1, width: 30, height: 30, alignItems: 'center', justifyContent: 'center', marginTop: spacing.md, borderRadius: 15, backgroundColor: '#7A8798' },
+  timelineLine: { flex: 1, width: 2, minHeight: 92, backgroundColor: '#DDE3EC' },
+  eventCard: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.md, marginLeft: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: '#E6EAF2', borderRadius: 16, backgroundColor: '#FFFFFF' },
+  eventCardNarrow: { flexDirection: 'column', alignItems: 'stretch' },
+  eventMain: { flex: 1, minWidth: 0, gap: spacing.xs },
+  eventTopline: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: spacing.sm },
+  eventType: { color: '#2F5FA6', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold, textTransform: 'uppercase' },
+  eventMobileDate: { color: '#6B7788', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.semiBold },
+  eventVehicle: { color: '#15294D', fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.bold },
+  eventDetails: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
+  eventDetail: { flex: 1, minWidth: 150, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  eventDetailText: { flex: 1, color: '#5A6470', fontSize: typography.fontSize.sm },
+  detailAction: { minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, paddingHorizontal: spacing.sm, borderRadius: 10, backgroundColor: '#EDF4FF' },
+  detailActionHovered: { backgroundColor: '#DDEAF9' },
+  detailActionText: { color: '#2F5FA6', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  statusBadge: { maxWidth: 210, paddingVertical: spacing.xs, paddingHorizontal: spacing.sm, borderRadius: 10, backgroundColor: '#EEF2F7' },
+  statusBadgeText: { fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  drawerOverlay: { flex: 1, alignItems: 'flex-end', backgroundColor: 'rgba(11, 18, 32, 0.42)' },
+  drawerOverlayNarrow: { backgroundColor: '#F4F6FA' },
+  drawer: { width: 520, maxWidth: '100%', height: '100%', borderLeftWidth: 1, borderLeftColor: '#E6EAF2', backgroundColor: '#FFFFFF' },
+  drawerNarrow: { width: '100%', borderLeftWidth: 0 },
+  drawerHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md, padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: '#E6EAF2' },
+  drawerHeaderCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
+  drawerEyebrow: { color: '#2F5FA6', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold, textTransform: 'uppercase' },
+  drawerTitle: { color: '#15294D', fontSize: typography.fontSize.lg, fontWeight: typography.fontWeight.bold },
+  closeButton: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#F4F6FA' },
+  closeButtonHovered: { backgroundColor: '#E6EAF2' },
+  drawerContent: { gap: spacing.lg, padding: spacing.lg, paddingBottom: spacing.xxl },
+  drawerStatusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: spacing.sm },
+  drawerDate: { color: '#5A6470', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.semiBold },
+  detailList: { gap: spacing.xs },
+  detailListItem: { gap: spacing.xs, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: '#EEF2F7' },
+  detailListLabel: { color: '#7A8798', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.semiBold },
+  detailListValue: { color: '#15294D', fontSize: typography.fontSize.sm, lineHeight: typography.lineHeight.sm, fontWeight: typography.fontWeight.semiBold },
+  journeyPanel: { gap: spacing.md, padding: spacing.md, borderRadius: 16, backgroundColor: '#F8FAFC' },
+  journeyTitle: { color: '#15294D', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  journeySteps: { gap: spacing.sm },
+  journeyStep: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  journeyDot: { width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#D5DCE8', borderRadius: 11, backgroundColor: '#FFFFFF' },
+  journeyDotComplete: { borderColor: '#2F7D67', backgroundColor: '#2F7D67' },
+  journeyDotActive: { borderColor: '#2F5FA6', backgroundColor: '#2F5FA6' },
+  journeyLabel: { color: '#8A97A8', fontSize: typography.fontSize.sm },
+  journeyLabelComplete: { color: '#2F7D67', fontWeight: typography.fontWeight.semiBold },
+  journeyLabelActive: { color: '#2F5FA6', fontWeight: typography.fontWeight.bold },
+  cancelArea: { paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: '#E6EAF2' },
+  cancelButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md, borderWidth: 1, borderColor: '#E1A7A7', borderRadius: 12, backgroundColor: '#FFF8F8' },
+  cancelButtonHovered: { backgroundColor: '#FCECEC' },
+  cancelButtonText: { color: '#A14B4B', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  cancelConfirmation: { gap: spacing.sm, padding: spacing.md, borderRadius: 14, backgroundColor: '#FFF5F5' },
+  cancelConfirmationTitle: { color: '#8F2D24', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  cancelConfirmationText: { color: '#7A4340', fontSize: typography.fontSize.sm },
+  cancelActions: { flexDirection: 'row', gap: spacing.sm },
+  keepButton: { flex: 1, minHeight: 40, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#D8E2F0', borderRadius: 10, backgroundColor: '#FFFFFF' },
+  keepButtonText: { color: '#2F5FA6', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  confirmCancelButton: { flex: 1, minHeight: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#B85C5C' },
+  confirmCancelButtonText: { color: '#FFFFFF', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  cancelError: { color: '#A14B4B', fontSize: typography.fontSize.xs },
+  emptyPanel: { alignItems: 'center', gap: spacing.sm, padding: spacing.xl, borderWidth: 1, borderStyle: 'dashed', borderColor: '#CBD5E1', borderRadius: 20, backgroundColor: '#FFFFFF' },
+  emptyIcon: { width: 52, height: 52, alignItems: 'center', justifyContent: 'center', borderRadius: 16, backgroundColor: '#EAF2FC' },
+  emptyTitle: { color: '#15294D', fontSize: typography.fontSize.lg, fontWeight: typography.fontWeight.bold, textAlign: 'center' },
+  emptyText: { maxWidth: 560, color: '#5A6470', fontSize: typography.fontSize.sm, lineHeight: typography.lineHeight.sm, textAlign: 'center' },
+  emptyAction: { minHeight: 42, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md, borderRadius: 12, backgroundColor: '#2F5FA6' },
+  emptyActionText: { color: '#FFFFFF', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  feedback: { gap: spacing.xs, padding: spacing.md, borderWidth: 1, borderRadius: 14 },
+  feedbackSuccess: { borderColor: '#B9DCCF', backgroundColor: '#F0F8F5' },
+  feedbackDanger: { borderColor: '#E8BEBE', backgroundColor: '#FFF5F5' },
+  feedbackTitle: { color: '#15294D', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  feedbackText: { color: '#5A6470', fontSize: typography.fontSize.sm },
+  skeletonPage: { flex: 1, width: '100%', maxWidth: 1280, alignSelf: 'center', gap: spacing.md, padding: spacing.md, backgroundColor: '#F4F6FA' },
+  skeletonHeader: { minHeight: 220, borderRadius: 20, backgroundColor: '#DDE4ED' },
+  skeletonFilters: { minHeight: 92, borderRadius: 18, backgroundColor: '#FFFFFF' },
+  skeletonEvent: { minHeight: 132, borderRadius: 16, backgroundColor: '#FFFFFF' },
+  pressed: { opacity: 0.84 },
+  disabled: { opacity: 0.46 },
 });

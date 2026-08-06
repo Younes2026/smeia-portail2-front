@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { appointmentsApi } from '@/core/api/appointments.api';
+import { getDirectusRelationId } from '@/core/api/directus-relation';
+import { vehiclesApi } from '@/core/api/vehicles.api';
 import { mapAppointmentsToListItems } from '@/features/appointments/model/appointment.mapper';
 import { useAuthStore } from '@/store/auth.store';
 
@@ -20,11 +22,30 @@ export function useAppointmentsHistory() {
         return [];
       }
 
-      const appointments =
-        await appointmentsApi.getAppointmentsByCustomer(customerId);
+      const [appointments, vehicles] = await Promise.all([
+        appointmentsApi.getAppointmentsByCustomer(customerId),
+        vehiclesApi.getVehicles(customerId),
+      ]);
+      const ownedVehicleIds = new Set(vehicles.map((vehicle) => vehicle.id));
+      const customerAppointments = appointments.filter((appointment) => {
+        const appointmentCustomerId = getDirectusRelationId(
+          appointment.customer_id
+        );
+        const appointmentVehicleId = getDirectusRelationId(
+          appointment.vehicle_id
+        );
 
-      return mapAppointmentsToListItems(appointments);
+        return (
+          appointmentCustomerId === customerId &&
+          appointmentVehicleId !== null &&
+          ownedVehicleIds.has(appointmentVehicleId)
+        );
+      });
+
+      return mapAppointmentsToListItems(customerAppointments);
     },
+    enabled: customerId !== null,
+    refetchOnMount: 'always',
     refetchOnWindowFocus: true,
   });
 }

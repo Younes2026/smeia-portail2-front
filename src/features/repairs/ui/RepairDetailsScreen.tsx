@@ -1,4 +1,5 @@
 import { Link, useLocalSearchParams } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import type { ReactNode } from 'react';
 import {
   Pressable,
@@ -16,16 +17,12 @@ import { ClientPortalLayout } from '@/components/layout/ClientPortalLayout';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
+import { useClientRepairPresentation } from '@/features/repairs/hooks/useClientRepairPresentation';
 import { useRepairDetail } from '@/features/repairs/hooks/useRepairs';
-import type { RepairDetailItem } from '@/features/repairs/model/repair.types';
-
-const timelineSteps = [
-  'Réception véhicule',
-  'Diagnostic',
-  'Réparation',
-  'Contrôle qualité',
-  'Véhicule prêt',
-] as const;
+import {
+  CLIENT_REPAIR_PROGRESS_STEPS,
+  type ClientRepairViewModel,
+} from '@/features/repairs/model/client-repair.presenter';
 
 function parseRepairId(value: string | string[] | undefined): number | null {
   const rawValue = Array.isArray(value) ? value[0] : value;
@@ -39,58 +36,20 @@ function parseRepairId(value: string | string[] | undefined): number | null {
   return Number.isNaN(repairId) ? null : repairId;
 }
 
-function normalizeStatus(value: string): string {
-  return value
-    .toLocaleLowerCase('fr-FR')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-}
-
-function getProgressIndex(status: string): number {
-  const normalizedStatus = normalizeStatus(status);
-
-  if (
-    normalizedStatus.includes('pret') ||
-    normalizedStatus.includes('termine') ||
-    normalizedStatus.includes('livre')
-  ) {
-    return 4;
-  }
-
-  if (
-    normalizedStatus.includes('controle') ||
-    normalizedStatus.includes('qualite')
-  ) {
-    return 3;
-  }
-
-  if (
-    normalizedStatus.includes('reparation') ||
-    normalizedStatus.includes('intervention') ||
-    normalizedStatus.includes('atelier')
-  ) {
-    return 2;
-  }
-
-  if (
-    normalizedStatus.includes('diagnostic') ||
-    normalizedStatus.includes('devis')
-  ) {
-    return 1;
-  }
-
-  return 0;
-}
-
 export function RepairDetailsScreen() {
   const { width } = useWindowDimensions();
   const isNarrow = width < breakpoints.tablet;
   const params = useLocalSearchParams();
   const repairId = parseRepairId(params.id);
   const repairQuery = useRepairDetail(repairId);
-  const repair = repairQuery.data ?? null;
+  const rawRepair = repairQuery.data ?? null;
+  const repairPresentation = useClientRepairPresentation(
+    rawRepair ? [rawRepair] : []
+  );
+  const repair = repairPresentation.data[0] ?? null;
+  const isLoading = repairQuery.isLoading || repairPresentation.isLoading;
 
-  if (repairQuery.isLoading) {
+  if (isLoading) {
     return (
       <ClientPortalLayout activeRoute="/repairs">
         <View style={styles.stateContainer}>
@@ -128,14 +87,14 @@ export function RepairDetailsScreen() {
             <View style={[styles.header, isNarrow && styles.headerNarrow]}>
               <View style={styles.headerCopy}>
                 <Text style={styles.eyebrow}>Détail réparation</Text>
-                <Text style={styles.title}>{repair.documentNumber}</Text>
+                <Text style={styles.title}>{repair.referenceLabel}</Text>
                 <Text style={styles.subtitle}>
                   Suivi atelier du dossier associé à votre véhicule.
                 </Text>
               </View>
 
               <View style={[styles.headerActions, isNarrow && styles.stack]}>
-                <StatusBadge label={repair.statusName} />
+                <StatusBadge label={repair.statusLabel} />
 
                 <Link href="/repairs" asChild>
                   <Pressable
@@ -159,13 +118,7 @@ export function RepairDetailsScreen() {
               <RepairPanel repair={repair} />
             </View>
 
-            {repair.hasCustomerInformation ? (
-              <InfoPanel title="Client">
-                <InfoLine label="Nom" value={repair.customerName} />
-                <InfoLine label="Téléphone" value={repair.customerPhone} />
-                <InfoLine label="Email" value={repair.customerEmail} />
-              </InfoPanel>
-            ) : null}
+            <InterventionPanel repair={repair} />
 
             <TimelinePanel repair={repair} />
           </>
@@ -183,18 +136,19 @@ export function RepairDetailsScreen() {
 }
 
 type RepairPanelProps = {
-  repair: RepairDetailItem;
+  repair: ClientRepairViewModel;
 };
 
 function VehiclePanel({ repair }: RepairPanelProps) {
   return (
     <InfoPanel title="Véhicule">
-      <InfoLine label="Marque" value={repair.brandName} />
-      <InfoLine label="Modèle" value={repair.vehicleModel} />
-      <InfoLine label="Immatriculation" value={repair.registrationNumber} />
-      <InfoLine label="VIN" value={repair.vehicleVin} />
-      <InfoLine label="Année" value={repair.vehicleYear} />
-      <InfoLine label="Kilométrage" value={repair.vehicleMileage} />
+      <InfoLine label="Véhicule" value={repair.vehicleLabel} />
+      {repair.brandName ? (
+        <InfoLine label="Marque" value={repair.brandName} />
+      ) : null}
+      {repair.registrationLabel ? (
+        <InfoLine label="Immatriculation" value={repair.registrationLabel} />
+      ) : null}
     </InfoPanel>
   );
 }
@@ -202,19 +156,55 @@ function VehiclePanel({ repair }: RepairPanelProps) {
 function RepairPanel({ repair }: RepairPanelProps) {
   return (
     <InfoPanel title="Réparation">
-      <InfoLine label="Document" value={repair.documentNumber} />
-      <InfoLine label="Statut" value={repair.statusName} />
-      <InfoLine label="Type de service" value={repair.serviceTypeName} />
-      <InfoLine label="Atelier" value={repair.workshopName} />
-      <InfoLine label="Kilométrage d'entrée" value={repair.entryMileage} />
-      <InfoLine label="Réceptionniste" value={repair.receptionistName} />
+      <InfoLine label="Statut" value={repair.statusLabel} />
+      <InfoLine label="Prestation" value={repair.serviceLabel} />
+      <InfoLine label="Atelier" value={repair.workshopLabel} />
+      <InfoLine label="Date de réception" value={repair.entryDateLabel} />
+      <InfoLine
+        label="Kilométrage d'entrée"
+        value={repair.mileageLabel ?? 'À compléter par l’atelier'}
+      />
+      <InfoLine
+        label="Réceptionniste"
+        value={repair.receptionistLabel ?? 'À compléter par l’atelier'}
+      />
     </InfoPanel>
   );
 }
 
-function TimelinePanel({ repair }: RepairPanelProps) {
-  const progressIndex = getProgressIndex(repair.statusName);
+function InterventionPanel({ repair }: RepairPanelProps) {
+  const details = [
+    { label: 'Demande initiale', value: repair.description },
+    { label: 'Diagnostic réel', value: repair.diagnosticLabel },
+    { label: 'Travaux effectués', value: repair.workDoneLabel },
+    { label: 'Solution apportée', value: repair.solutionLabel },
+    { label: 'Recommandations', value: repair.recommendationsLabel },
+    { label: 'Note atelier', value: repair.note },
+    { label: 'Date de sortie', value: repair.realExitDateLabel },
+    { label: 'Coût final', value: repair.finalCostLabel },
+  ].filter((item): item is { label: string; value: string } => Boolean(item.value));
 
+  if (details.length === 0) {
+    return null;
+  }
+
+  return (
+    <View style={styles.panel}>
+      <Text style={styles.sectionKicker}>Compte rendu</Text>
+      <Text style={styles.sectionTitle}>Intervention atelier</Text>
+      <View style={styles.interventionGrid}>
+        {details.map((detail) => (
+          <View key={detail.label} style={styles.interventionItem}>
+            <Text style={styles.detailLabel}>{detail.label}</Text>
+            <Text style={styles.interventionValue}>{detail.value}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function TimelinePanel({ repair }: RepairPanelProps) {
   return (
     <View style={styles.panel}>
       <View style={styles.sectionHeader}>
@@ -222,43 +212,61 @@ function TimelinePanel({ repair }: RepairPanelProps) {
           <Text style={styles.sectionKicker}>Progression</Text>
           <Text style={styles.sectionTitle}>Suivi atelier</Text>
           <Text style={styles.sectionDescription}>
-            Statut actuel : {repair.statusName}
+            Statut actuel : {repair.statusLabel}
           </Text>
         </View>
       </View>
 
       <View style={styles.timeline}>
-        {timelineSteps.map((step, index) => {
-          const isComplete = index <= progressIndex;
+        {CLIENT_REPAIR_PROGRESS_STEPS.map((step, index) => {
+          const isComplete = index <= repair.progress.completedThrough;
+          const isActive = index === repair.progress.activeIndex;
 
           return (
             <View
               key={step}
-              style={[styles.timelineStep, isComplete && styles.stepComplete]}
+              style={[
+                styles.timelineStep,
+                isComplete && styles.stepComplete,
+                isActive && styles.stepActive,
+              ]}
             >
               <View
                 style={[
                   styles.timelineDot,
                   isComplete && styles.timelineDotComplete,
+                  isActive && styles.timelineDotActive,
                 ]}
               >
-                <Text
-                  style={[
-                    styles.timelineDotText,
-                    isComplete && styles.timelineDotTextComplete,
-                  ]}
-                >
-                  {index + 1}
-                </Text>
+                {isComplete ? (
+                  <SymbolView
+                    name={{ ios: 'checkmark', android: 'check', web: 'check' }}
+                    size={16}
+                    tintColor="#FFFFFF"
+                  />
+                ) : (
+                  <Text
+                    style={[
+                      styles.timelineDotText,
+                      isActive && styles.timelineDotTextComplete,
+                    ]}
+                  >
+                    {index + 1}
+                  </Text>
+                )}
               </View>
               <Text
                 style={[
                   styles.timelineLabel,
                   isComplete && styles.timelineLabelComplete,
+                  isActive && styles.timelineLabelActive,
                 ]}
               >
                 {step}
               </Text>
+              {isActive ? (
+                <Text style={styles.timelineActiveLabel}>Étape actuelle</Text>
+              ) : null}
             </View>
           );
         })}
@@ -507,20 +515,44 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
 
+  interventionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+  },
+
+  interventionItem: {
+    flexGrow: 1,
+    flexBasis: 300,
+    minWidth: 240,
+    gap: spacing.xs,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E6EAF2',
+    borderRadius: 16,
+    backgroundColor: '#F8FAFC',
+  },
+
+  interventionValue: {
+    color: '#071832',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+
   timeline: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.sm,
+    gap: spacing.xs,
   },
 
   timelineStep: {
     flexGrow: 1,
-    flexBasis: 170,
-    minHeight: 112,
+    flexBasis: 140,
+    minHeight: 88,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: spacing.sm,
-    padding: spacing.md,
+    gap: spacing.xs,
+    padding: spacing.sm,
     borderWidth: 1,
     borderColor: '#E1E8F1',
     borderRadius: 16,
@@ -528,8 +560,13 @@ const styles = StyleSheet.create({
   },
 
   stepComplete: {
-    borderColor: '#B9D0EB',
-    backgroundColor: '#EFF6FD',
+    borderColor: '#B9DCCF',
+    backgroundColor: '#F0F8F5',
+  },
+
+  stepActive: {
+    borderColor: '#9BB9DE',
+    backgroundColor: '#EDF4FF',
   },
 
   timelineDot: {
@@ -544,8 +581,13 @@ const styles = StyleSheet.create({
   },
 
   timelineDotComplete: {
-    borderColor: '#0F4C9A',
-    backgroundColor: '#0F4C9A',
+    borderColor: '#2F7D67',
+    backgroundColor: '#2F7D67',
+  },
+
+  timelineDotActive: {
+    borderColor: '#2F5FA6',
+    backgroundColor: '#2F5FA6',
   },
 
   timelineDotText: {
@@ -566,7 +608,19 @@ const styles = StyleSheet.create({
   },
 
   timelineLabelComplete: {
-    color: '#0F4C9A',
+    color: '#2F7D67',
+  },
+
+  timelineLabelActive: {
+    color: '#2F5FA6',
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  timelineActiveLabel: {
+    color: '#2F5FA6',
+    fontSize: 10,
+    fontWeight: typography.fontWeight.bold,
+    textTransform: 'uppercase',
   },
 
   statePanel: {

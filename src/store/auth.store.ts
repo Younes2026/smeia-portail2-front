@@ -19,12 +19,33 @@ export type AuthCustomer = {
   address?: string | null;
 };
 
+export type AuthSavAgent = {
+  id: number;
+  userId: string;
+  active: boolean;
+  workshopId?: number | null;
+  workshopName?: string | null;
+};
+
+export type AuthTechnician = {
+  id: number;
+  userId: string;
+  active: boolean;
+  workshopId?: number | null;
+  workshopName?: string | null;
+  fullName?: string | null;
+  specialty?: string | null;
+  dailyHours?: number | null;
+};
+
 export type AuthSession = {
   accessToken: string;
   refreshToken: string | null;
   expires: number | null;
   user?: AuthUser | null;
   customer?: AuthCustomer | null;
+  savAgent?: AuthSavAgent | null;
+  technician?: AuthTechnician | null;
 };
 
 type AuthState = {
@@ -33,6 +54,8 @@ type AuthState = {
   expires: number | null;
   user: AuthUser | null;
   customer: AuthCustomer | null;
+  savAgent: AuthSavAgent | null;
+  technician: AuthTechnician | null;
   isAuthenticated: boolean;
   hasHydrated: boolean;
 
@@ -47,6 +70,8 @@ const emptySession = {
   expires: null,
   user: null,
   customer: null,
+  savAgent: null,
+  technician: null,
   isAuthenticated: false,
 } satisfies Pick<
   AuthState,
@@ -55,14 +80,18 @@ const emptySession = {
   | 'expires'
   | 'user'
   | 'customer'
+  | 'savAgent'
+  | 'technician'
   | 'isAuthenticated'
 >;
 
 function hasProtectedSession(
   accessToken: string | null,
-  customer: AuthCustomer | null
+  customer: AuthCustomer | null,
+  savAgent: AuthSavAgent | null,
+  technician: AuthTechnician | null
 ): boolean {
-  return Boolean(accessToken && customer);
+  return Boolean(accessToken && (customer || savAgent || technician));
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -77,6 +106,8 @@ export const useAuthStore = create<AuthState>()(
         expires,
         user = null,
         customer = null,
+        savAgent = null,
+        technician = null,
       }) => {
         set({
           accessToken,
@@ -84,7 +115,14 @@ export const useAuthStore = create<AuthState>()(
           expires,
           user,
           customer,
-          isAuthenticated: hasProtectedSession(accessToken, customer),
+          savAgent,
+          technician,
+          isAuthenticated: hasProtectedSession(
+            accessToken,
+            customer,
+            savAgent,
+            technician
+          ),
         });
       },
 
@@ -102,7 +140,10 @@ export const useAuthStore = create<AuthState>()(
       onRehydrateStorage: (state) => (hydratedState) => {
         const authState = hydratedState ?? state;
 
-        if (!authState.accessToken || !authState.customer) {
+        if (
+          !authState.accessToken ||
+          (!authState.customer && !authState.savAgent && !authState.technician)
+        ) {
           authState.clearSession();
         } else {
           authState.setSession({
@@ -111,6 +152,8 @@ export const useAuthStore = create<AuthState>()(
             expires: authState.expires,
             user: authState.user,
             customer: authState.customer,
+            savAgent: authState.savAgent,
+            technician: authState.technician,
           });
         }
 
@@ -122,6 +165,8 @@ export const useAuthStore = create<AuthState>()(
         expires: state.expires,
         user: state.user,
         customer: state.customer,
+        savAgent: state.savAgent,
+        technician: state.technician,
         isAuthenticated: state.isAuthenticated,
       }),
     }
