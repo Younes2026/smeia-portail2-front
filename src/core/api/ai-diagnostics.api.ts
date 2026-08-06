@@ -7,6 +7,75 @@ export type AiDiagnosticAnswer = {
   answer: string;
 };
 
+export type AiDiagnosticImageMimeType =
+  | 'image/jpeg'
+  | 'image/png'
+  | 'image/webp';
+
+export type AiDiagnosticPhoto = {
+  mime_type: AiDiagnosticImageMimeType;
+  data_url: string;
+};
+
+export type AnalyzeAiDiagnosticInput = {
+  vehicle_id: number;
+  description: string;
+  answers: AiDiagnosticAnswer[];
+  photo?: AiDiagnosticPhoto | null;
+};
+
+export type AiDiagnosisStatus =
+  | 'needs_questions'
+  | 'ready'
+  | 'out_of_scope';
+
+export type AiDiagnosticOutputUrgencyLevel =
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'critical';
+
+export type AiDiagnosticDrivingAdvice =
+  | 'normal'
+  | 'caution'
+  | 'stop_if_possible'
+  | 'do_not_drive';
+
+export type AiDiagnosticConfidence = 'low' | 'medium' | 'high';
+
+export type AiDiagnosticServiceTypeId = 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type AiDiagnosticWorkshopId = 1 | 2 | 3 | 4;
+
+export type AiDiagnosticImageAnalysis = {
+  image_provided: boolean;
+  useful: boolean;
+  observations: string | null;
+  photo_suggested: boolean;
+  requested_image_hint: string | null;
+};
+
+export type AiDiagnosticQuestion = {
+  id: string;
+  text: string;
+  answer_type: 'yes_no' | 'single_choice' | 'free_text';
+  options: string[];
+};
+
+export type AiDiagnosticResult = {
+  diagnosis_status: AiDiagnosisStatus;
+  problem_summary: string;
+  image_analysis: AiDiagnosticImageAnalysis;
+  urgency_level: AiDiagnosticOutputUrgencyLevel;
+  driving_advice: AiDiagnosticDrivingAdvice;
+  safety_message: string | null;
+  suggested_service_type_id: AiDiagnosticServiceTypeId | null;
+  suggested_workshop_ids: AiDiagnosticWorkshopId[];
+  questions: AiDiagnosticQuestion[];
+  client_message: string;
+  sav_notes: string;
+  confidence: AiDiagnosticConfidence;
+};
+
 export type DirectusAiDiagnosticCustomer = {
   id: number;
   first_name?: string | null;
@@ -126,7 +195,17 @@ function canRetryWithoutRelationFields(error: unknown): boolean {
   return error instanceof HttpError && [400, 403].includes(error.status);
 }
 
+export function analyzeAiDiagnostic(input: AnalyzeAiDiagnosticInput) {
+  return httpClient.post<AiDiagnosticResult>(
+    '/api/ai/diagnostics',
+    input,
+    { destination: 'aiBackend' }
+  );
+}
+
 export const aiDiagnosticsApi = {
+  analyzeAiDiagnostic,
+
   createAiDiagnostic: ({
     customerId,
     vehicleId,

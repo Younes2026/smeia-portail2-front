@@ -4,32 +4,45 @@ import { useAuthStore } from '@/store/auth.store';
 
 type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
-type RequestOptions = {
+export type HttpDestination = 'directus' | 'aiBackend';
+
+type DestinationOptions = {
+  destination?: HttpDestination;
+};
+
+type RequestOptions = DestinationOptions & {
   method?: HttpMethod;
   body?: unknown;
   headers?: HeadersInit;
 };
 
-type DirectusSuccessResponse<T> = {
+type SuccessResponse<T> = {
   data: T;
 };
 
 export class HttpError extends Error {
   status: number;
+  code: string | null;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code: string | null = null) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
+    this.code = code;
   }
 }
 
-function buildUrl(endpoint: string): string {
+function buildUrl(
+  endpoint: string,
+  destination: HttpDestination = 'directus'
+): string {
   const normalizedEndpoint = endpoint.startsWith('/')
     ? endpoint
     : `/${endpoint}`;
+  const baseUrl =
+    destination === 'aiBackend' ? env.aiBackendUrl : env.directusUrl;
 
-  return `${env.directusUrl}${normalizedEndpoint}`;
+  return `${baseUrl}${normalizedEndpoint}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -50,8 +63,19 @@ async function parseJson(response: Response): Promise<unknown> {
   }
 }
 
-function getDirectusErrorMessage(payload: unknown, status: number): string {
-  const fallback = `Erreur API Directus (${status})`;
+type ParsedHttpError = {
+  message: string;
+  code: string | null;
+};
+
+function getDirectusError(
+  payload: unknown,
+  status: number
+): ParsedHttpError {
+  const fallback: ParsedHttpError = {
+    message: `Erreur API Directus (${status})`,
+    code: null,
+  };
 
   if (!isRecord(payload)) {
     return fallback;
@@ -60,15 +84,54 @@ function getDirectusErrorMessage(payload: unknown, status: number): string {
   const errors = payload.errors;
 
   if (Array.isArray(errors)) {
-    const firstMessage = errors.find(
-      (error): error is { message: string } =>
+    const firstError = errors.find(
+      (error): error is Record<string, unknown> =>
         isRecord(error) && typeof error.message === 'string'
-    )?.message;
+    );
 
-    return firstMessage ?? fallback;
+    if (!firstError) {
+      return fallback;
+    }
+
+    const extensions = firstError.extensions;
+
+    return {
+      message: firstError.message as string,
+      code:
+        isRecord(extensions) && typeof extensions.code === 'string'
+          ? extensions.code
+          : null,
+    };
   }
 
-  return typeof payload.message === 'string' ? payload.message : fallback;
+  return {
+    message:
+      typeof payload.message === 'string' ? payload.message : fallback.message,
+    code: typeof payload.code === 'string' ? payload.code : null,
+  };
+}
+
+function getAiBackendError(
+  payload: unknown,
+  status: number
+): ParsedHttpError {
+  const fallback: ParsedHttpError = {
+    message: `AI backend request failed (${status})`,
+    code: null,
+  };
+
+  if (!isRecord(payload) || !isRecord(payload.error)) {
+    return fallback;
+  }
+
+  return {
+    message:
+      typeof payload.error.message === 'string'
+        ? payload.error.message
+        : fallback.message,
+    code:
+      typeof payload.error.code === 'string' ? payload.error.code : null,
+  };
 }
 
 function createHeaders(body: unknown, headers?: HeadersInit): Headers {
@@ -90,25 +153,31 @@ function createHeaders(body: unknown, headers?: HeadersInit): Headers {
   return requestHeaders;
 }
 
-function readDirectusData<T>(payload: unknown): T {
+function readResponseData<T>(payload: unknown, destination: HttpDestination): T {
   if (!isRecord(payload) || !('data' in payload)) {
     throw new HttpError(
-      'Reponse Directus invalide : champ data manquant.',
-      500
+      destination === 'directus'
+        ? 'Reponse Directus invalide : champ data manquant.'
+        : 'The AI backend returned an invalid response.',
+      500,
+      destination === 'directus'
+        ? 'INVALID_DIRECTUS_RESPONSE'
+        : 'INVALID_AI_BACKEND_RESPONSE'
     );
   }
 
-  return (payload as DirectusSuccessResponse<T>).data;
+  return (payload as SuccessResponse<T>).data;
 }
 
 async function request<T>(
   endpoint: string,
   options: RequestOptions = {}
 ): Promise<T> {
+  const destination = options.destination ?? 'directus';
   const body =
     options.body !== undefined ? JSON.stringify(options.body) : undefined;
 
-  const response = await fetch(buildUrl(endpoint), {
+  const response = await fetch(buildUrl(endpoint, destination), {
     method: options.method ?? 'GET',
     headers: createHeaders(options.body, options.headers),
     body,
@@ -116,6 +185,10 @@ async function request<T>(
 
   if (!response.ok) {
     const errorPayload = await parseJson(response);
+    const parsedError =
+      destination === 'aiBackend'
+        ? getAiBackendError(errorPayload, response.status)
+        : getDirectusError(errorPayload, response.status);
 
     if (response.status === 401) {
       useAuthStore.getState().clearSession();
@@ -123,8 +196,9 @@ async function request<T>(
     }
 
     throw new HttpError(
-      getDirectusErrorMessage(errorPayload, response.status),
-      response.status
+      parsedError.message,
+      response.status,
+      parsedError.code
     );
   }
 
@@ -134,26 +208,38 @@ async function request<T>(
 
   const payload = await parseJson(response);
 
-  return readDirectusData<T>(payload);
+  return readResponseData<T>(payload, destination);
 }
 
 export const httpClient = {
-  get: <T>(endpoint: string) => request<T>(endpoint),
+  get: <T>(endpoint: string, options: DestinationOptions = {}) =>
+    request<T>(endpoint, options),
 
-  post: <T>(endpoint: string, body: unknown) =>
+  post: <T>(
+    endpoint: string,
+    body: unknown,
+    options: DestinationOptions = {}
+  ) =>
     request<T>(endpoint, {
+      ...options,
       method: 'POST',
       body,
     }),
 
-  patch: <T>(endpoint: string, body: unknown) =>
+  patch: <T>(
+    endpoint: string,
+    body: unknown,
+    options: DestinationOptions = {}
+  ) =>
     request<T>(endpoint, {
+      ...options,
       method: 'PATCH',
       body,
     }),
 
-  delete: <T>(endpoint: string) =>
+  delete: <T>(endpoint: string, options: DestinationOptions = {}) =>
     request<T>(endpoint, {
+      ...options,
       method: 'DELETE',
     }),
 };
