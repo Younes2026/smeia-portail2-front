@@ -1,6 +1,6 @@
 import { Link, useLocalSearchParams } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -15,6 +15,7 @@ import { ErrorState } from '@/components/feedback/ErrorState';
 import { LoadingState } from '@/components/feedback/LoadingState';
 import { ClientPortalLayout } from '@/components/layout/ClientPortalLayout';
 import { breakpoints } from '@/core/theme/breakpoints';
+import { colors } from '@/core/theme/colors';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
 import { useClientRepairPresentation } from '@/features/repairs/hooks/useClientRepairPresentation';
@@ -113,6 +114,8 @@ export function RepairDetailsScreen() {
               </View>
             </View>
 
+            <TimelinePanel isNarrow={isNarrow} repair={repair} />
+
             <View style={[styles.overviewGrid, isNarrow && styles.stack]}>
               <VehiclePanel repair={repair} />
               <RepairPanel repair={repair} />
@@ -120,7 +123,8 @@ export function RepairDetailsScreen() {
 
             <InterventionPanel repair={repair} />
 
-            <TimelinePanel repair={repair} />
+            <CarePanel isNarrow={isNarrow} repair={repair} />
+            <WorkshopContactPanel isNarrow={isNarrow} repair={repair} />
           </>
         ) : (
           <View style={styles.statePanel}>
@@ -149,6 +153,7 @@ function VehiclePanel({ repair }: RepairPanelProps) {
       {repair.registrationLabel ? (
         <InfoLine label="Immatriculation" value={repair.registrationLabel} />
       ) : null}
+      <InfoLine label="VIN" value={repair.vehicleVinLabel ?? 'Non renseigné'} />
     </InfoPanel>
   );
 }
@@ -157,16 +162,10 @@ function RepairPanel({ repair }: RepairPanelProps) {
   return (
     <InfoPanel title="Réparation">
       <InfoLine label="Statut" value={repair.statusLabel} />
-      <InfoLine label="Prestation" value={repair.serviceLabel} />
-      <InfoLine label="Atelier" value={repair.workshopLabel} />
       <InfoLine label="Date de réception" value={repair.entryDateLabel} />
       <InfoLine
         label="Kilométrage d'entrée"
         value={repair.mileageLabel ?? 'À compléter par l’atelier'}
-      />
-      <InfoLine
-        label="Réceptionniste"
-        value={repair.receptionistLabel ?? 'À compléter par l’atelier'}
       />
     </InfoPanel>
   );
@@ -204,72 +203,343 @@ function InterventionPanel({ repair }: RepairPanelProps) {
   );
 }
 
-function TimelinePanel({ repair }: RepairPanelProps) {
+function CarePanel({
+  isNarrow,
+  repair,
+}: RepairPanelProps & { isNarrow: boolean }) {
   return (
-    <View style={styles.panel}>
-      <View style={styles.sectionHeader}>
-        <View style={styles.sectionCopy}>
-          <Text style={styles.sectionKicker}>Progression</Text>
-          <Text style={styles.sectionTitle}>Suivi atelier</Text>
-          <Text style={styles.sectionDescription}>
-            Statut actuel : {repair.statusLabel}
+    <View style={[styles.panel, styles.lowerPanel]}>
+      <View style={[styles.sectionCopy, styles.lowerSectionCopy]}>
+        <Text style={styles.sectionKicker}>Organisation atelier</Text>
+        <Text style={styles.sectionTitle}>Prise en charge</Text>
+        <Text style={styles.sectionDescription}>
+          Les informations associées à votre dossier de réparation.
+        </Text>
+      </View>
+      <View style={[styles.careGrid, isNarrow && styles.careGridNarrow]}>
+        <CareItem
+          icon={{ ios: 'wrench', android: 'build', web: 'build' }}
+          isNarrow={isNarrow}
+          label="Prestation"
+          value={repair.serviceLabel || 'Non renseigné'}
+        />
+        <CareItem
+          icon={{ ios: 'mappin', android: 'location_on', web: 'location_on' }}
+          isNarrow={isNarrow}
+          label="Atelier responsable"
+          value={repair.workshopLabel || 'Non renseigné'}
+        />
+      </View>
+    </View>
+  );
+}
+
+function CareItem({
+  icon,
+  isNarrow,
+  label,
+  value,
+}: {
+  icon: ComponentProps<typeof SymbolView>['name'];
+  isNarrow: boolean;
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={[styles.careItem, isNarrow && styles.careItemNarrow]}>
+      <View style={styles.careIcon}>
+        <SymbolView name={icon} size={21} tintColor="#1E5AA8" />
+      </View>
+      <View style={styles.careCopy}>
+        <Text style={styles.careLabel}>{label}</Text>
+        <Text style={styles.careValue}>{value}</Text>
+      </View>
+    </View>
+  );
+}
+
+function getContactInitials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toLocaleUpperCase('fr-FR'))
+    .join('');
+}
+
+function WorkshopContactPanel({
+  isNarrow,
+  repair,
+}: RepairPanelProps & { isNarrow: boolean }) {
+  const receptionistName = repair.receptionistLabel?.trim() || null;
+
+  return (
+    <View style={[styles.panel, styles.lowerPanel]}>
+      <View style={[styles.sectionCopy, styles.lowerSectionCopy]}>
+        <Text style={styles.sectionKicker}>Accompagnement</Text>
+        <Text style={styles.sectionTitle}>Votre contact atelier</Text>
+        <Text style={styles.sectionDescription}>
+          Retrouvez ici votre interlocuteur pour le suivi du dossier.
+        </Text>
+      </View>
+
+      <View style={styles.contactIdentity}>
+        <View style={styles.contactAvatar}>
+          {receptionistName ? (
+            <Text style={styles.contactInitials}>
+              {getContactInitials(receptionistName)}
+            </Text>
+          ) : (
+            <SymbolView
+              name={{ ios: 'person', android: 'person', web: 'person' }}
+              size={24}
+              tintColor="#1E5AA8"
+            />
+          )}
+        </View>
+        <View style={styles.contactIdentityCopy}>
+          <View style={styles.contactBadge}>
+            <Text style={styles.contactBadgeText}>CONTACT ATELIER</Text>
+          </View>
+          <Text style={styles.contactName}>
+            {receptionistName ?? 'Réceptionniste à confirmer'}
           </Text>
         </View>
       </View>
 
-      <View style={styles.timeline}>
+      <View style={styles.contactDetails}>
+        <ContactDetail
+          icon={{ ios: 'person', android: 'person', web: 'person' }}
+          label="Réceptionniste"
+          value={receptionistName ?? 'Réceptionniste à confirmer'}
+        />
+        <ContactDetail
+          icon={{ ios: 'envelope', android: 'mail', web: 'mail' }}
+          label="Email"
+          muted
+          value="Email à renseigner"
+        />
+        <ContactDetail
+          icon={{ ios: 'phone', android: 'phone', web: 'phone' }}
+          label="Téléphone"
+          muted
+          value="Téléphone à renseigner"
+        />
+      </View>
+
+      <View
+        style={[
+          styles.contactActions,
+          isNarrow && styles.contactActionsNarrow,
+        ]}
+      >
+        <ContactAction
+          icon={{ ios: 'envelope', android: 'mail', web: 'mail' }}
+          isNarrow={isNarrow}
+          label="Envoyer un email"
+        />
+        <ContactAction
+          icon={{ ios: 'phone', android: 'phone', web: 'phone' }}
+          isNarrow={isNarrow}
+          label="Appeler"
+        />
+      </View>
+
+      <View style={styles.contactPendingNotice}>
+        <SymbolView
+          name={{ ios: 'clock', android: 'schedule', web: 'schedule' }}
+          size={16}
+          tintColor={colors.light.text.secondary}
+        />
+        <Text style={styles.contactPendingText}>Coordonnées à venir</Text>
+      </View>
+    </View>
+  );
+}
+
+function ContactDetail({
+  icon,
+  label,
+  muted = false,
+  value,
+}: {
+  icon: ComponentProps<typeof SymbolView>['name'];
+  label: string;
+  muted?: boolean;
+  value: string;
+}) {
+  return (
+    <View style={styles.contactDetail}>
+      <View style={styles.contactDetailIcon}>
+        <SymbolView name={icon} size={16} tintColor="#1E5AA8" />
+      </View>
+      <View style={styles.contactDetailCopy}>
+        <Text style={styles.contactDetailLabel}>{label}</Text>
+        <Text style={[styles.contactDetailValue, muted && styles.contactDetailValueMuted]}>
+          {value}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function ContactAction({
+  icon,
+  isNarrow,
+  label,
+}: {
+  icon: ComponentProps<typeof SymbolView>['name'];
+  isNarrow: boolean;
+  label: string;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled: true }}
+      disabled
+      style={[styles.contactAction, isNarrow && styles.contactActionNarrow]}
+    >
+      <SymbolView name={icon} size={17} tintColor={colors.light.text.muted} />
+      <Text style={styles.contactActionText}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function TimelinePanel({
+  isNarrow,
+  repair,
+}: RepairPanelProps & { isNarrow: boolean }) {
+  const currentStepNumber = repair.progress.activeIndex + 1;
+  const currentStep = CLIENT_REPAIR_PROGRESS_STEPS[repair.progress.activeIndex];
+
+  return (
+    <View style={styles.progressPanel}>
+      <View
+        style={[
+          styles.progressHeader,
+          isNarrow && styles.progressHeaderNarrow,
+        ]}
+      >
+        <View style={styles.sectionCopy}>
+          <Text style={styles.sectionKicker}>Progression</Text>
+          <Text style={styles.sectionTitle}>Suivi atelier</Text>
+          <Text style={styles.sectionDescription}>
+            Suivez les principales étapes de prise en charge de votre véhicule.
+          </Text>
+        </View>
+        <View
+          style={[styles.progressMeta, isNarrow && styles.progressMetaNarrow]}
+        >
+          <View style={styles.progressStepBadge}>
+            <Text style={styles.progressStepBadgeText}>
+              Étape {currentStepNumber} sur {CLIENT_REPAIR_PROGRESS_STEPS.length}
+            </Text>
+          </View>
+          <View style={styles.progressStatusGroup}>
+            <Text style={styles.progressStatusLabel}>Statut actuel</Text>
+            <View style={styles.progressStatusBadge}>
+              <View style={styles.progressStatusDot} />
+              <Text style={styles.progressStatusText}>{repair.statusLabel}</Text>
+            </View>
+          </View>
+        </View>
+      </View>
+
+      <View
+        accessibilityLabel={`Progression de la réparation : étape ${currentStepNumber} sur ${CLIENT_REPAIR_PROGRESS_STEPS.length}, ${currentStep}`}
+        style={[styles.timeline, isNarrow && styles.timelineNarrow]}
+      >
         {CLIENT_REPAIR_PROGRESS_STEPS.map((step, index) => {
           const isComplete = index <= repair.progress.completedThrough;
           const isActive = index === repair.progress.activeIndex;
+          const connectorComplete = index < repair.progress.activeIndex;
+          const stateLabel = isComplete
+            ? 'terminée'
+            : isActive
+              ? 'actuelle'
+              : 'à venir';
 
           return (
             <View
               key={step}
+              accessible
+              accessibilityLabel={`${step}, étape ${index + 1} sur ${CLIENT_REPAIR_PROGRESS_STEPS.length}, ${stateLabel}`}
               style={[
                 styles.timelineStep,
-                isComplete && styles.stepComplete,
-                isActive && styles.stepActive,
+                isNarrow && styles.timelineStepNarrow,
               ]}
             >
-              <View
-                style={[
-                  styles.timelineDot,
-                  isComplete && styles.timelineDotComplete,
-                  isActive && styles.timelineDotActive,
-                ]}
-              >
-                {isComplete ? (
-                  <SymbolView
-                    name={{ ios: 'checkmark', android: 'check', web: 'check' }}
-                    size={16}
-                    tintColor="#FFFFFF"
-                  />
-                ) : (
-                  <Text
+              <View style={[styles.timelineTrack, isNarrow && styles.timelineTrackNarrow]}>
+                <View
+                  style={[
+                    styles.timelineDot,
+                    isComplete && styles.timelineDotComplete,
+                    isActive && styles.timelineDotActive,
+                  ]}
+                >
+                  {isComplete ? (
+                    <SymbolView
+                      name={{ ios: 'checkmark', android: 'check', web: 'check' }}
+                      size={15}
+                      tintColor="#FFFFFF"
+                    />
+                  ) : (
+                    <Text
+                      style={[
+                        styles.timelineDotText,
+                        isActive && styles.timelineDotTextActive,
+                      ]}
+                    >
+                      {index + 1}
+                    </Text>
+                  )}
+                </View>
+                {index < CLIENT_REPAIR_PROGRESS_STEPS.length - 1 ? (
+                  <View
                     style={[
-                      styles.timelineDotText,
-                      isActive && styles.timelineDotTextComplete,
+                      styles.timelineConnector,
+                      connectorComplete && styles.timelineConnectorComplete,
+                      isNarrow && styles.timelineConnectorNarrow,
                     ]}
-                  >
-                    {index + 1}
-                  </Text>
-                )}
+                  />
+                ) : null}
               </View>
-              <Text
-                style={[
-                  styles.timelineLabel,
-                  isComplete && styles.timelineLabelComplete,
-                  isActive && styles.timelineLabelActive,
-                ]}
-              >
-                {step}
-              </Text>
-              {isActive ? (
-                <Text style={styles.timelineActiveLabel}>Étape actuelle</Text>
-              ) : null}
+              <View style={[styles.timelineCopy, isNarrow && styles.timelineCopyNarrow]}>
+                <Text
+                  style={[
+                    styles.timelineLabel,
+                    isComplete && styles.timelineLabelComplete,
+                    isActive && styles.timelineLabelActive,
+                  ]}
+                >
+                  {step}
+                </Text>
+                {isActive ? (
+                  <Text style={styles.timelineActiveLabel}>Étape actuelle</Text>
+                ) : null}
+              </View>
             </View>
           );
         })}
+      </View>
+
+      <View style={[styles.progressCurrent, isNarrow && styles.progressCurrentNarrow]}>
+        <View style={styles.progressCurrentIcon}>
+          <SymbolView
+            name={{
+              ios: 'shield.checkered',
+              android: 'verified_user',
+              web: 'verified_user',
+            }}
+            size={19}
+            tintColor="#FFFFFF"
+          />
+        </View>
+        <View style={styles.progressCurrentCopy}>
+          <Text style={styles.progressCurrentLabel}>Étape actuelle</Text>
+          <Text style={styles.progressCurrentTitle}>{currentStep}</Text>
+          <Text style={styles.progressCurrentMessage}>{repair.message}</Text>
+        </View>
       </View>
     </View>
   );
@@ -459,16 +729,24 @@ const styles = StyleSheet.create({
     shadowRadius: 26,
   },
 
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: spacing.md,
+  lowerPanel: {
+    width: '100%',
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
+    alignSelf: 'stretch',
+    gap: spacing.lg,
   },
 
   sectionCopy: {
     flex: 1,
     gap: spacing.xs,
+  },
+
+  lowerSectionCopy: {
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
   },
 
   sectionKicker: {
@@ -539,88 +817,483 @@ const styles = StyleSheet.create({
     lineHeight: typography.lineHeight.sm,
   },
 
-  timeline: {
+  careGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.xs,
+    gap: spacing.md,
   },
 
-  timelineStep: {
-    flexGrow: 1,
-    flexBasis: 140,
-    minHeight: 88,
+  careGridNarrow: {
+    flexDirection: 'column',
+  },
+
+  careItem: {
+    flex: 1,
+    flexBasis: 190,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.light.border.default,
+    borderRadius: 18,
+    backgroundColor: colors.light.background.secondary,
+  },
+
+  careItemNarrow: {
+    width: '100%',
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
+  },
+
+  careIcon: {
+    width: 46,
+    height: 46,
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 14,
+    backgroundColor: '#E8F1FC',
+  },
+
+  careCopy: {
+    flex: 1,
+    minWidth: 0,
     gap: spacing.xs,
-    padding: spacing.sm,
+  },
+
+  careLabel: {
+    color: colors.light.text.secondary,
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+
+  careValue: {
+    color: colors.light.text.primary,
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  contactIdentity: {
+    width: '100%',
+    flexShrink: 0,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#E1E8F1',
-    borderRadius: 16,
-    backgroundColor: '#F7F9FC',
+    borderColor: colors.light.border.default,
+    borderRadius: 18,
+    backgroundColor: colors.light.background.secondary,
   },
 
-  stepComplete: {
-    borderColor: '#B9DCCF',
-    backgroundColor: '#F0F8F5',
+  contactAvatar: {
+    width: 54,
+    height: 54,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#B9D0EB',
+    borderRadius: 999,
+    backgroundColor: '#E8F1FC',
   },
 
-  stepActive: {
-    borderColor: '#9BB9DE',
-    backgroundColor: '#EDF4FF',
+  contactInitials: {
+    color: '#1E5AA8',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
   },
 
-  timelineDot: {
+  contactIdentityCopy: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-start',
+    gap: spacing.xs,
+  },
+
+  contactBadge: {
+    paddingVertical: 3,
+    paddingHorizontal: spacing.sm,
+    borderRadius: 999,
+    backgroundColor: '#DDEAF9',
+  },
+
+  contactBadgeText: {
+    color: '#1E5AA8',
+    fontSize: 10,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  contactName: {
+    color: colors.light.text.primary,
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  contactDetails: {
+    width: '100%',
+    flexShrink: 0,
+  },
+
+  contactDetail: {
+    width: '100%',
+    flexShrink: 0,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.light.border.default,
+  },
+
+  contactDetailIcon: {
     width: 34,
     height: 34,
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: '#EDF5FD',
+  },
+
+  contactDetailCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+
+  contactDetailLabel: {
+    color: colors.light.text.secondary,
+    fontSize: typography.fontSize.xs,
+  },
+
+  contactDetailValue: {
+    color: colors.light.text.primary,
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+
+  contactDetailValueMuted: {
+    color: colors.light.text.muted,
+  },
+
+  contactActions: {
+    width: '100%',
+    flexShrink: 0,
+    minWidth: 0,
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+
+  contactActionsNarrow: {
+    flexDirection: 'column',
+  },
+
+  contactAction: {
+    minHeight: 44,
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
     borderWidth: 1,
-    borderColor: '#CDD7E4',
+    borderColor: colors.light.border.default,
+    borderRadius: 13,
+    backgroundColor: colors.light.background.muted,
+    opacity: 0.62,
+  },
+
+  contactActionNarrow: {
+    width: '100%',
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
+  },
+
+  contactActionText: {
+    color: colors.light.text.muted,
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  contactPendingNotice: {
+    width: '100%',
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    padding: spacing.sm,
+    borderRadius: 12,
+    backgroundColor: colors.light.background.muted,
+  },
+
+  contactPendingText: {
+    color: colors.light.text.secondary,
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+
+  progressPanel: {
+    minWidth: 0,
+    gap: spacing.xl,
+    padding: spacing.xl,
+    borderWidth: 1,
+    borderColor: colors.light.border.default,
+    borderRadius: 24,
+    backgroundColor: '#FBFDFF',
+    shadowColor: colors.light.brand.primary,
+    shadowOffset: {
+      width: 0,
+      height: 16,
+    },
+    shadowOpacity: 0.08,
+    shadowRadius: 30,
+  },
+
+  progressHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.lg,
+  },
+
+  progressHeaderNarrow: {
+    flexDirection: 'column',
+  },
+
+  progressMeta: {
+    alignItems: 'flex-end',
+    gap: spacing.sm,
+  },
+
+  progressMetaNarrow: {
+    alignItems: 'flex-start',
+  },
+
+  progressStepBadge: {
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
     borderRadius: 999,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.light.brand.primary,
   },
 
-  timelineDotComplete: {
-    borderColor: '#2F7D67',
-    backgroundColor: '#2F7D67',
-  },
-
-  timelineDotActive: {
-    borderColor: '#2F5FA6',
-    backgroundColor: '#2F5FA6',
-  },
-
-  timelineDotText: {
-    color: '#657386',
+  progressStepBadgeText: {
+    color: colors.light.text.inverse,
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
   },
 
-  timelineDotTextComplete: {
-    color: '#FFFFFF',
+  progressStatusBadge: {
+    maxWidth: 240,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    borderWidth: 1,
+    borderColor: '#B9D0EB',
+    borderRadius: 999,
+    backgroundColor: '#EDF5FD',
+  },
+
+  progressStatusGroup: {
+    alignItems: 'flex-end',
+    gap: spacing.xs,
+  },
+
+  progressStatusLabel: {
+    color: colors.light.text.secondary,
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+
+  progressStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: colors.light.status.info,
+  },
+
+  progressStatusText: {
+    flexShrink: 1,
+    color: '#0F4C9A',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  timeline: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+
+  timelineNarrow: {
+    flexDirection: 'column',
+  },
+
+  timelineStep: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  timelineStepNarrow: {
+    width: '100%',
+    minHeight: 66,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+
+  timelineTrack: {
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  timelineTrackNarrow: {
+    width: 36,
+    alignSelf: 'stretch',
+    flexDirection: 'column',
+  },
+
+  timelineDot: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: colors.light.border.strong,
+    borderRadius: 999,
+    backgroundColor: colors.light.background.primary,
+  },
+
+  timelineDotComplete: {
+    borderColor: colors.light.status.success,
+    backgroundColor: colors.light.status.success,
+  },
+
+  timelineDotActive: {
+    borderWidth: 3,
+    borderColor: colors.light.status.info,
+    backgroundColor: '#1E5AA8',
+    shadowColor: colors.light.status.info,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.24,
+    shadowRadius: 10,
+  },
+
+  timelineDotText: {
+    color: colors.light.text.secondary,
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  timelineDotTextActive: {
+    color: colors.light.text.inverse,
+  },
+
+  timelineConnector: {
+    flex: 1,
+    height: 3,
+    backgroundColor: colors.light.border.default,
+  },
+
+  timelineConnectorComplete: {
+    backgroundColor: colors.light.status.success,
+  },
+
+  timelineConnectorNarrow: {
+    width: 3,
+    height: 'auto',
+    minHeight: 30,
+  },
+
+  timelineCopy: {
+    gap: 3,
+    marginTop: spacing.sm,
+    paddingRight: spacing.sm,
+  },
+
+  timelineCopyNarrow: {
+    flex: 1,
+    marginTop: 5,
+    paddingLeft: spacing.sm,
+    paddingRight: 0,
   },
 
   timelineLabel: {
-    color: '#657386',
-    fontSize: typography.fontSize.sm,
+    color: colors.light.text.muted,
+    fontSize: typography.fontSize.xs,
+    lineHeight: typography.lineHeight.xs,
     fontWeight: typography.fontWeight.semiBold,
-    textAlign: 'center',
   },
 
   timelineLabelComplete: {
-    color: '#2F7D67',
+    color: colors.light.status.success,
   },
 
   timelineLabelActive: {
-    color: '#2F5FA6',
+    color: '#1E5AA8',
     fontWeight: typography.fontWeight.bold,
   },
 
   timelineActiveLabel: {
-    color: '#2F5FA6',
+    color: '#1E5AA8',
     fontSize: 10,
     fontWeight: typography.fontWeight.bold,
     textTransform: 'uppercase',
+  },
+
+  progressCurrent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: 18,
+    backgroundColor: colors.light.brand.primary,
+  },
+
+  progressCurrentNarrow: {
+    alignItems: 'flex-start',
+  },
+
+  progressCurrentIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 13,
+    backgroundColor: '#1E5AA8',
+  },
+
+  progressCurrentCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+
+  progressCurrentLabel: {
+    color: '#AFCBEF',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+    textTransform: 'uppercase',
+  },
+
+  progressCurrentTitle: {
+    color: colors.light.text.inverse,
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  progressCurrentMessage: {
+    color: '#DCE8F7',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
   },
 
   statePanel: {

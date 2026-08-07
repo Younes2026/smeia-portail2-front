@@ -94,17 +94,83 @@ function isAppointmentActive(appointment: AppointmentListItem): boolean {
   );
 }
 
+function getUsableVehicleValue(value?: string | null): string | null {
+  const trimmedValue = value?.trim();
+
+  if (!trimmedValue) {
+    return null;
+  }
+
+  const normalizedValue = trimmedValue
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('fr-FR');
+
+  if (
+    ['-', 'n/a', 'null', 'undefined'].includes(normalizedValue) ||
+    normalizedValue.includes('unknown') ||
+    normalizedValue.includes('non renseigne') ||
+    normalizedValue.includes("en attente d'information") ||
+    normalizedValue.includes('non disponible')
+  ) {
+    return null;
+  }
+
+  return trimmedValue;
+}
+
 function getVehicleTitle(vehicle: VehicleListItem): string {
-  return cleanDisplayValue(
-    `${vehicle.brandName} ${vehicle.model}`,
-    "Véhicule en attente d'information"
-  );
+  const brandName = getUsableVehicleValue(vehicle.brandName);
+  const modelName = getUsableVehicleValue(vehicle.model);
+
+  return [brandName, modelName].filter(Boolean).join(' ') || 'Votre véhicule';
+}
+
+function getVehicleRegistration(vehicle: VehicleListItem): string | null {
+  return getUsableVehicleValue(vehicle.registrationNumber);
+}
+
+function getVehicleMileage(vehicle: VehicleListItem): string | null {
+  if (
+    vehicle.mileageValue === null ||
+    !Number.isFinite(vehicle.mileageValue) ||
+    vehicle.mileageValue < 0
+  ) {
+    return null;
+  }
+
+  const formattedMileage = new Intl.NumberFormat('fr-FR', {
+    maximumFractionDigits: 0,
+  })
+    .format(vehicle.mileageValue)
+    .replace(/[\u00a0\u202f]/g, ' ');
+
+  return `${formattedMileage} km`;
+}
+
+function getVehicleYear(vehicle: VehicleListItem): string | null {
+  return vehicle.yearValue !== null &&
+    Number.isInteger(vehicle.yearValue) &&
+    vehicle.yearValue > 0
+    ? String(vehicle.yearValue)
+    : null;
+}
+
+function getMaskedVehicleVin(vehicle: VehicleListItem): string | null {
+  const vin = getUsableVehicleValue(vehicle.vinValue);
+
+  if (!vin || vin.length <= 6) {
+    return null;
+  }
+
+  return `••••••${vin.slice(-6)}`;
 }
 
 function getVehicleReference(vehicle: VehicleListItem): string {
-  return cleanDisplayValue(
-    vehicle.registrationNumber,
-    cleanDisplayValue(vehicle.vin, 'Référence en attente')
+  return (
+    getVehicleRegistration(vehicle) ??
+    getMaskedVehicleVin(vehicle) ??
+    'Véhicule enregistré'
   );
 }
 
@@ -211,7 +277,7 @@ export function HomeScreen() {
           hasError={repairsQuery.isError}
           isLoading={isRepairPresentationLoading}
           isNarrow={isNarrow}
-          repair={activeRepairs[0] ?? null}
+          repairs={activeRepairs}
         />
 
         <View style={[styles.dashboardGrid, isNarrow && styles.stack]}>
@@ -371,15 +437,18 @@ type RepairProgressCardProps = {
   hasError: boolean;
   isLoading: boolean;
   isNarrow: boolean;
-  repair: ClientRepairViewModel | null;
+  repairs: ClientRepairViewModel[];
 };
 
 function RepairProgressCard({
   hasError,
   isLoading,
   isNarrow,
-  repair,
+  repairs,
 }: RepairProgressCardProps) {
+  const [selectedRepairId, setSelectedRepairId] = useState<number | null>(null);
+  const repair =
+    repairs.find((item) => item.id === selectedRepairId) ?? repairs[0] ?? null;
   const progress = repair?.progress ?? null;
 
   return (
@@ -418,6 +487,15 @@ function RepairProgressCard({
         <EmptyPanel text="Aucune réparation en cours pour le moment." compact />
       ) : (
         <>
+          {repairs.length > 1 ? (
+            <RepairDossierSelector
+              isNarrow={isNarrow}
+              repairs={repairs}
+              selectedRepairId={repair.id}
+              onSelect={setSelectedRepairId}
+            />
+          ) : null}
+
           <View style={styles.progressSummary}>
             <ProgressMeta label="Référence" value={repair.referenceLabel} />
             <ProgressMeta label="Véhicule" value={repair.vehicleLabel} />
@@ -545,7 +623,13 @@ function RepairProgressCard({
                 </Text>
               </View>
             </View>
-            <Link href="/repairs" asChild>
+            <Link
+              href={{
+                pathname: '/repairs/[id]',
+                params: { id: String(repair.id) },
+              }}
+              asChild
+            >
               <Pressable
                 accessibilityRole="link"
                 style={({ hovered, pressed }) => [
@@ -560,6 +644,82 @@ function RepairProgressCard({
           </View>
         </>
       )}
+    </View>
+  );
+}
+
+function RepairDossierSelector({
+  isNarrow,
+  onSelect,
+  repairs,
+  selectedRepairId,
+}: {
+  isNarrow: boolean;
+  onSelect: (repairId: number) => void;
+  repairs: ClientRepairViewModel[];
+  selectedRepairId: number;
+}) {
+  return (
+    <View style={styles.dossierSelector}>
+      <Text style={styles.dossierSelectorTitle}>Vos dossiers atelier</Text>
+      <View style={styles.dossierSelectorList}>
+        {repairs.map((repair) => {
+          const isSelected = repair.id === selectedRepairId;
+          const displayedServiceLabel = cleanDisplayValue(
+            repair.serviceLabel,
+            ''
+          );
+          const serviceLabel =
+            normalizeStatus(displayedServiceLabel) === 'service atelier'
+              ? ''
+              : displayedServiceLabel;
+
+          return (
+            <Pressable
+              key={repair.id}
+              accessibilityLabel={`${repair.referenceLabel}, ${repair.vehicleLabel}, ${repair.statusLabel}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isSelected }}
+              onPress={() => onSelect(repair.id)}
+              style={({ hovered, pressed }) => [
+                styles.dossierOption,
+                isNarrow && styles.dossierOptionNarrow,
+                isSelected && styles.dossierOptionSelected,
+                hovered && !isSelected && styles.dossierOptionHovered,
+                pressed && styles.pressed,
+              ]}
+            >
+              <View style={styles.dossierOptionTopline}>
+                <Text numberOfLines={1} style={styles.dossierReference}>
+                  {repair.referenceLabel}
+                </Text>
+                <View
+                  style={[
+                    styles.dossierStatus,
+                    isSelected && styles.dossierStatusSelected,
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1}
+                    style={[
+                      styles.dossierStatusText,
+                      isSelected && styles.dossierStatusTextSelected,
+                    ]}
+                  >
+                    {repair.statusLabel}
+                  </Text>
+                </View>
+              </View>
+              <Text numberOfLines={1} style={styles.dossierVehicle}>
+                {repair.vehicleLabel}
+              </Text>
+              <Text numberOfLines={2} style={styles.dossierMeta}>
+                {[repair.workshopLabel, serviceLabel].filter(Boolean).join(' • ')}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -649,6 +809,18 @@ function VehiclesShowcase({
     : '';
   const selectedBrandLogo = selectedVehicle
     ? getBrandLogo(selectedVehicle.brandName)
+    : null;
+  const selectedVehicleRegistration = selectedVehicle
+    ? getVehicleRegistration(selectedVehicle)
+    : null;
+  const selectedVehicleMileage = selectedVehicle
+    ? getVehicleMileage(selectedVehicle)
+    : null;
+  const selectedVehicleYear = selectedVehicle
+    ? getVehicleYear(selectedVehicle)
+    : null;
+  const selectedVehicleVin = selectedVehicle
+    ? getMaskedVehicleVin(selectedVehicle)
     : null;
 
   return (
@@ -790,7 +962,7 @@ function VehiclesShowcase({
 
             <View style={styles.vehicleIdentity}>
               <View style={styles.vehicleIdentityTopline}>
-                <Text style={styles.heroVehicleEyebrow}>Véhicule sélectionné</Text>
+                <Text style={styles.heroVehicleEyebrow}>Véhicule principal</Text>
                 {selectedVehicleStatus ? (
                   <View style={styles.heroVehicleStatus}>
                     <View style={styles.heroVehicleStatusDot} />
@@ -803,26 +975,28 @@ function VehiclesShowcase({
               <Text style={styles.heroVehicleName}>
                 {getVehicleTitle(selectedVehicle)}
               </Text>
-              <Text style={styles.heroVehicleMeta}>
-                {getVehicleReference(selectedVehicle)}
-              </Text>
+              {selectedVehicleRegistration ? (
+                <Text style={styles.heroVehicleMeta}>
+                  {selectedVehicleRegistration}
+                </Text>
+              ) : null}
 
-              <View style={styles.vehicleFacts}>
-                <VehicleFact
-                  label="Kilométrage"
-                  value={cleanDisplayValue(
-                    selectedVehicle.mileage,
-                    'Kilométrage non renseigné'
-                  )}
-                />
-                <VehicleFact
-                  label="Année"
-                  value={cleanDisplayValue(
-                    selectedVehicle.year,
-                    'Année non renseignée'
-                  )}
-                />
-              </View>
+              {selectedVehicleMileage || selectedVehicleYear || selectedVehicleVin ? (
+                <View style={styles.vehicleFacts}>
+                  {selectedVehicleMileage ? (
+                    <VehicleFact
+                      label="Kilométrage"
+                      value={selectedVehicleMileage}
+                    />
+                  ) : null}
+                  {selectedVehicleYear ? (
+                    <VehicleFact label="Année" value={selectedVehicleYear} />
+                  ) : null}
+                  {selectedVehicleVin ? (
+                    <VehicleFact label="VIN" value={selectedVehicleVin} />
+                  ) : null}
+                </View>
+              ) : null}
             </View>
           </View>
         </View>
@@ -1451,6 +1625,91 @@ const styles = StyleSheet.create({
     color: '#2F5FA6',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
+  },
+  dossierSelector: {
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E6EAF2',
+    borderRadius: 16,
+    backgroundColor: '#F8FAFC',
+  },
+  dossierSelectorTitle: {
+    color: '#15294D',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+  dossierSelectorList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  dossierOption: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 300,
+    minWidth: 240,
+    gap: spacing.xs,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#DDE3EC',
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+  },
+  dossierOptionNarrow: {
+    width: '100%',
+    minWidth: 0,
+    flexGrow: 0,
+    flexBasis: 'auto',
+  },
+  dossierOptionSelected: {
+    borderColor: '#2F5FA6',
+    backgroundColor: '#EDF4FF',
+  },
+  dossierOptionHovered: {
+    borderColor: '#B9CBE3',
+    backgroundColor: '#F3F7FC',
+  },
+  dossierOptionTopline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  dossierReference: {
+    flex: 1,
+    minWidth: 0,
+    color: '#15294D',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+  dossierStatus: {
+    maxWidth: '48%',
+    paddingVertical: 3,
+    paddingHorizontal: spacing.sm,
+    borderRadius: 999,
+    backgroundColor: '#EEF2F7',
+  },
+  dossierStatusSelected: {
+    backgroundColor: '#D5E6FA',
+  },
+  dossierStatusText: {
+    color: '#657386',
+    fontSize: 10,
+    fontWeight: typography.fontWeight.bold,
+  },
+  dossierStatusTextSelected: {
+    color: '#2F5FA6',
+  },
+  dossierVehicle: {
+    color: '#334A69',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+  dossierMeta: {
+    color: '#7A8798',
+    fontSize: typography.fontSize.xs,
+    lineHeight: typography.lineHeight.xs,
   },
   progressSummary: {
     flexDirection: 'row',

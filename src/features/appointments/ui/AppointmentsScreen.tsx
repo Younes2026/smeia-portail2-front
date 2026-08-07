@@ -59,7 +59,7 @@ const STEPS: StepDefinition[] = [
   },
   {
     label: 'Prestation',
-    description: 'Indiquez la prestation souhaitée pour votre véhicule.',
+    description: 'Vérifiez la prestation associée à l’atelier choisi.',
     icon: { ios: 'wrench', android: 'build', web: 'build' },
   },
   {
@@ -78,6 +78,53 @@ const APPOINTMENT_TIME_SLOT_GROUPS = [
   { label: 'Matin', slots: ['08:30', '09:30', '10:30', '11:30'] },
   { label: 'Après-midi', slots: ['14:00', '15:00', '16:00'] },
 ] as const;
+
+const SERVICE_TYPE_ID_BY_WORKSHOP_ID: Readonly<Record<number, number>> = {
+  1: 2,
+  2: 3,
+  3: 4,
+  4: 5,
+};
+
+type AutomaticServiceSelection =
+  | { errorMessage: null; serviceType: DictionaryItem }
+  | { errorMessage: string; serviceType: null };
+
+function resolveAutomaticServiceSelection(
+  workshopId: number,
+  workshops: readonly Workshop[],
+  serviceTypes: readonly DictionaryItem[]
+): AutomaticServiceSelection {
+  if (!workshops.some((workshop) => workshop.id === workshopId)) {
+    return {
+      errorMessage:
+        'L’atelier sélectionné n’est plus disponible. Veuillez choisir un autre atelier.',
+      serviceType: null,
+    };
+  }
+
+  const serviceTypeId = SERVICE_TYPE_ID_BY_WORKSHOP_ID[workshopId];
+
+  if (serviceTypeId === undefined) {
+    return {
+      errorMessage:
+        'Aucune prestation automatique n’est configurée pour cet atelier. Veuillez choisir un autre atelier.',
+      serviceType: null,
+    };
+  }
+
+  const serviceType = serviceTypes.find((service) => service.id === serviceTypeId);
+
+  if (!serviceType) {
+    return {
+      errorMessage:
+        'La prestation correspondant à cet atelier n’est pas disponible. Veuillez choisir un autre atelier ou réessayer plus tard.',
+      serviceType: null,
+    };
+  }
+
+  return { errorMessage: null, serviceType };
+}
 
 const WEB_STICKY_SUMMARY_STYLE =
   Platform.OS === 'web'
@@ -242,6 +289,23 @@ export function AppointmentsScreen() {
     () => serviceTypes.find((service) => service.id === selectedServiceTypeId) ?? null,
     [selectedServiceTypeId, serviceTypes]
   );
+  const automaticServiceSelection = useMemo(
+    () =>
+      selectedWorkshopId === null
+        ? null
+        : resolveAutomaticServiceSelection(
+            selectedWorkshopId,
+            workshops,
+            serviceTypes
+          ),
+    [selectedWorkshopId, serviceTypes, workshops]
+  );
+  const hasValidAutomaticServiceSelection =
+    automaticServiceSelection !== null &&
+    automaticServiceSelection.errorMessage === null &&
+    automaticServiceSelection.serviceType.id === selectedServiceTypeId &&
+    selectedServiceType?.id === selectedServiceTypeId;
+  const serviceSelectionError = automaticServiceSelection?.errorMessage ?? null;
   const selectedShowroom = selectedWorkshop
     ? showrooms.find((showroom) => showroom.id === selectedWorkshop.showroom_id) ?? null
     : null;
@@ -258,15 +322,18 @@ export function AppointmentsScreen() {
   const canContinue =
     (activeStep === 0 && Boolean(selectedVehicle)) ||
     (activeStep === 1 && Boolean(selectedVehicle)) ||
-    (activeStep === 2 && Boolean(selectedWorkshop)) ||
-    (activeStep === 3 && Boolean(selectedServiceType)) ||
-    (activeStep === 4 && Boolean(requestedDate.trim() && requestedTime.trim())) ||
-    activeStep === 5;
+    (activeStep === 2 && hasValidAutomaticServiceSelection) ||
+    (activeStep === 3 && hasValidAutomaticServiceSelection) ||
+    (activeStep === 4 &&
+      hasValidAutomaticServiceSelection &&
+      Boolean(requestedDate.trim() && requestedTime.trim())) ||
+    (activeStep === 5 && hasValidAutomaticServiceSelection);
   const canSubmitAppointment =
     customer?.id !== undefined &&
     selectedVehicleId !== null &&
     selectedWorkshopId !== null &&
     selectedServiceTypeId !== null &&
+    hasValidAutomaticServiceSelection &&
     requestedDate.trim().length > 0 &&
     requestedTime.trim().length > 0 &&
     !createAppointment.isPending &&
@@ -296,6 +363,17 @@ export function AppointmentsScreen() {
     if (activeStep > 0) {
       setActiveStep((step) => step - 1);
     }
+  };
+
+  const handleWorkshopSelect = (workshopId: number) => {
+    const selection = resolveAutomaticServiceSelection(
+      workshopId,
+      workshops,
+      serviceTypes
+    );
+
+    setSelectedWorkshopId(workshopId);
+    setSelectedServiceTypeId(selection.serviceType?.id ?? null);
   };
 
   const handleSubmit = () => {
@@ -353,7 +431,11 @@ export function AppointmentsScreen() {
 
         <HorizontalStepper
           activeStep={activeStep}
-          furthestStep={furthestStep}
+          furthestStep={
+            hasValidAutomaticServiceSelection
+              ? furthestStep
+              : Math.min(furthestStep, 2)
+          }
           onSelectStep={setActiveStep}
         />
 
@@ -399,18 +481,18 @@ export function AppointmentsScreen() {
 
                 {activeStep === 2 ? (
                   <WorkshopStep
+                    errorMessage={serviceSelectionError}
                     selectedWorkshopId={selectedWorkshopId}
                     showrooms={showrooms}
                     workshops={workshops}
-                    onSelect={setSelectedWorkshopId}
+                    onSelect={handleWorkshopSelect}
                   />
                 ) : null}
 
                 {activeStep === 3 ? (
                   <ServiceTypeStep
-                    selectedServiceTypeId={selectedServiceTypeId}
-                    serviceTypes={serviceTypes}
-                    onSelect={setSelectedServiceTypeId}
+                    errorMessage={serviceSelectionError}
+                    selectedServiceType={selectedServiceType}
                   />
                 ) : null}
 
@@ -749,11 +831,13 @@ function VerificationStep({
 }
 
 function WorkshopStep({
+  errorMessage,
   selectedWorkshopId,
   showrooms,
   workshops,
   onSelect,
 }: {
+  errorMessage: string | null;
   selectedWorkshopId: number | null;
   showrooms: DictionaryItem[];
   workshops: Workshop[];
@@ -794,44 +878,77 @@ function WorkshopStep({
           text="Les ateliers SMEIA sont temporairement indisponibles."
         />
       )}
+      {errorMessage ? (
+        <View accessibilityRole="alert" style={styles.selectionErrorBox}>
+          <SymbolView
+            name={{ ios: 'exclamationmark.triangle', android: 'warning', web: 'warning' }}
+            size={18}
+            tintColor="#9B2C2C"
+          />
+          <Text style={styles.selectionErrorText}>{errorMessage}</Text>
+        </View>
+      ) : null}
     </View>
   );
 }
 
 function ServiceTypeStep({
-  selectedServiceTypeId,
-  serviceTypes,
-  onSelect,
+  errorMessage,
+  selectedServiceType,
 }: {
-  selectedServiceTypeId: number | null;
-  serviceTypes: DictionaryItem[];
-  onSelect: (serviceTypeId: number) => void;
+  errorMessage: string | null;
+  selectedServiceType: DictionaryItem | null;
 }) {
   return (
     <View style={styles.stepContent}>
       <SectionIntro
         kicker="Étape 4"
-        title="Choisissez votre prestation"
-        text="Sélectionnez la nature de la prise en charge souhaitée."
+        title="Votre prestation"
+        text="Vérifiez la prestation déterminée à partir de l’atelier sélectionné."
       />
-      {serviceTypes.length > 0 ? (
-        <View style={styles.choiceList}>
-          {serviceTypes.map((serviceType) => (
-            <CompactChoice
-              key={serviceType.id}
-              active={serviceType.id === selectedServiceTypeId}
-              icon={{ ios: 'wrench', android: 'build', web: 'build' }}
-              title={cleanValue(serviceType.name) ?? 'Service atelier'}
-              onPress={() => onSelect(serviceType.id)}
+      {selectedServiceType ? (
+        <>
+          <View
+            accessible
+            accessibilityLabel={`Prestation sélectionnée : ${selectedServiceType.name}`}
+            style={[styles.compactChoice, styles.compactChoiceActive]}
+          >
+            <View style={[styles.choiceIcon, styles.choiceIconActive]}>
+              <SymbolView
+                name={{ ios: 'wrench', android: 'build', web: 'build' }}
+                size={20}
+                tintColor="#FFFFFF"
+              />
+            </View>
+            <View style={styles.choiceCopy}>
+              <Text style={styles.choiceTitle}>{selectedServiceType.name}</Text>
+            </View>
+            <View style={styles.selectedBadge}>
+              <Text style={styles.selectedBadgeText}>Sélectionnée</Text>
+            </View>
+          </View>
+          <View style={styles.automaticSelectionNotice}>
+            <SymbolView
+              name={{ ios: 'info.circle', android: 'info', web: 'info' }}
+              size={18}
+              tintColor="#2F5FA6"
             />
-          ))}
-        </View>
+            <Text style={styles.automaticSelectionNoticeText}>
+              Cette prestation a été sélectionnée automatiquement selon l’atelier choisi.
+            </Text>
+          </View>
+        </>
       ) : (
-        <EmptyPanel
-          icon={{ ios: 'wrench', android: 'build', web: 'build' }}
-          title="Aucune prestation disponible"
-          text="Les services atelier sont temporairement indisponibles."
-        />
+        <View accessibilityRole="alert">
+          <EmptyPanel
+            icon={{ ios: 'wrench', android: 'build', web: 'build' }}
+            title="Prestation indisponible"
+            text={
+              errorMessage ??
+              'Sélectionnez un atelier disponible pour déterminer la prestation.'
+            }
+          />
+        </View>
       )}
     </View>
   );
@@ -1575,6 +1692,8 @@ const styles = StyleSheet.create({
   infoValue: { flex: 1.2, color: '#15294D', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.semiBold, textAlign: 'right' },
   privacyNotice: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, borderRadius: 14, backgroundColor: '#EDF4FF' },
   privacyText: { flex: 1, color: '#46617F', fontSize: typography.fontSize.sm, lineHeight: typography.lineHeight.sm },
+  selectionErrorBox: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: '#F0B6B6', borderRadius: 14, backgroundColor: '#FFF5F5' },
+  selectionErrorText: { flex: 1, color: '#7A3434', fontSize: typography.fontSize.sm, lineHeight: typography.lineHeight.sm },
   choiceList: { gap: spacing.sm },
   compactChoice: { minHeight: 74, flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md, borderWidth: 1, borderColor: '#E6EAF2', borderRadius: 16, backgroundColor: '#FFFFFF' },
   compactChoiceActive: { borderColor: '#7FA5D4', backgroundColor: '#F1F6FD' },
@@ -1585,6 +1704,8 @@ const styles = StyleSheet.create({
   choiceMeta: { color: '#5A6470', fontSize: typography.fontSize.xs },
   selectedBadge: { paddingVertical: spacing.xs, paddingHorizontal: spacing.sm, borderRadius: 12, backgroundColor: '#DDEAF9' },
   selectedBadgeText: { color: '#2F5FA6', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  automaticSelectionNotice: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, borderRadius: 14, backgroundColor: '#EDF4FF' },
+  automaticSelectionNoticeText: { flex: 1, color: '#46617F', fontSize: typography.fontSize.sm, lineHeight: typography.lineHeight.sm },
   dateTimeGrid: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.lg },
   dateTimeGridNarrow: { flexDirection: 'column' },
   calendarPanel: { flex: 1.2, minWidth: 0, gap: spacing.sm },

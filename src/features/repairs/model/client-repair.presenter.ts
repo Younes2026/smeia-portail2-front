@@ -55,6 +55,7 @@ export type ClientRepairViewModel = {
   statusKey: ClientRepairStatusKey;
   statusLabel: string;
   vehicleLabel: string;
+  vehicleVinLabel: string | null;
   workDoneLabel: string | null;
   workshopLabel: string;
 };
@@ -169,7 +170,7 @@ export function getClientStatusLabel(value?: string | null): string {
     pending: 'Dossier enregistré',
     confirmed: 'Prise en charge confirmée',
     in_progress: 'Intervention en cours',
-    completed: 'Intervention terminée',
+    completed: 'Contrôle final',
     cancelled: 'Dossier annulé',
     ready_for_pickup: 'Prêt à récupérer',
     unknown: 'Suivi en cours',
@@ -216,7 +217,7 @@ function getProgressMessage(statusKey: ClientRepairStatusKey): string {
   }
 
   if (statusKey === 'completed') {
-    return "L’intervention est terminée. Nos équipes effectuent les dernières vérifications.";
+    return 'Les travaux sont terminés. Votre véhicule est actuellement en phase de contrôle final.';
   }
 
   if (statusKey === 'ready_for_pickup') {
@@ -248,6 +249,7 @@ export type ClientVehiclePresentation = {
   label: string;
   modelName: string | null;
   registrationLabel: string | null;
+  vinLabel: string | null;
 };
 
 export function presentClientVehicle(
@@ -281,6 +283,7 @@ export function presentClientVehicle(
     : isUsableLabel(fallback.registration)
       ? fallback.registration.trim()
       : null;
+  const vinLabel = vehicle?.vinValue?.trim() || null;
   const identity = [brandName, model].filter(Boolean).join(' ').trim();
   const label = [identity, registrationLabel].filter(Boolean).join(' • ');
 
@@ -289,6 +292,7 @@ export function presentClientVehicle(
     label: label || 'Votre véhicule',
     modelName: model,
     registrationLabel,
+    vinLabel,
   };
 }
 
@@ -370,8 +374,7 @@ function presentClientRepair(
     entryDateValue: repair.entryDateValue,
     finalCostLabel: formatOptionalCost(repair.finalCost),
     isActive:
-      repair.realExitDate === null &&
-      !['cancelled', 'completed', 'ready_for_pickup'].includes(statusKey),
+      statusKey !== 'cancelled' && !repair.realExitDate?.trim(),
     message: getProgressMessage(statusKey),
     mileageLabel: formatOptionalMileage(repair.entryMileageValue),
     note: repair.note,
@@ -397,6 +400,7 @@ function presentClientRepair(
     statusLabel: getClientStatusLabel(rawStatus),
     solutionLabel: repair.solutionDescription,
     vehicleLabel: vehicle.label,
+    vehicleVinLabel: vehicle.vinLabel,
     workDoneLabel: repair.workDone,
     workshopLabel: isUsableLabel(dictionaryWorkshop)
       ? dictionaryWorkshop
