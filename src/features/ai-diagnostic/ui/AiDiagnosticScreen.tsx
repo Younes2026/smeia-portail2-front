@@ -1,5 +1,8 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Image as ExpoImage } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import { uuid as expoUuid } from 'expo-modules-core';
+import { Link } from 'expo-router';
 import {
   Image,
   Pressable,
@@ -16,6 +19,12 @@ import { LoadingState } from '@/components/feedback/LoadingState';
 import { useToasts } from '@/components/feedback/ToastProvider';
 import { ClientPortalLayout } from '@/components/layout/ClientPortalLayout';
 import type {
+  AiBookingAvailabilityOption,
+  AiBookingAvailabilityResult,
+  AiBookingConfirmationResult,
+  AiBookingPreferredPeriod,
+} from '@/core/api/ai-booking.api';
+import type {
   AiDiagnosticAnswer,
   AiDiagnosticConfidence,
   AiDiagnosticDrivingAdvice,
@@ -23,6 +32,8 @@ import type {
   AiDiagnosticOutputUrgencyLevel,
   AiDiagnosticQuestion,
   AiDiagnosticResult,
+  AiDiagnosticServiceTypeId,
+  AiDiagnosticWorkshopId,
 } from '@/core/api/ai-diagnostics.api';
 import type { DictionaryItem, Workshop } from '@/core/api/dictionaries.api';
 import { HttpError } from '@/core/api/http-client';
@@ -34,6 +45,18 @@ import { breakpoints } from '@/core/theme/breakpoints';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
 import { useAnalyzeAiDiagnostic } from '@/features/ai-diagnostic/hooks/useAnalyzeAiDiagnostic';
+import { useConfirmAiAppointment } from '@/features/ai-diagnostic/hooks/useConfirmAiAppointment';
+import { useSearchAiAppointmentAvailability } from '@/features/ai-diagnostic/hooks/useSearchAiAppointmentAvailability';
+import {
+  AI_BOOKING_TIME_ZONE,
+  formatBookingDate,
+  formatBookingTime,
+  getAiBookingErrorMessage,
+  getCasablancaTodayIso,
+  isBookingConflict,
+  isBookingOptionExpired,
+  isValidBookingDate,
+} from '@/features/ai-diagnostic/model/ai-booking.presenter';
 import {
   AiJourneyProgress,
   IntelligenceOrb,
@@ -136,6 +159,11 @@ type InitialFormErrors = {
   description?: string;
 };
 
+type AnswerDraft = {
+  selectedOption: string;
+  freeText: string;
+};
+
 function getDisplayName(
   firstName?: string | null,
   lastName?: string | null,
@@ -146,8 +174,55 @@ function getDisplayName(
   return fullName || email || 'client SMEIA';
 }
 
+function isMissingVehicleLabel(value: string): boolean {
+  const normalizedValue = value.trim().toLocaleLowerCase('fr-FR');
+
+  return (
+    normalizedValue.length === 0 ||
+    normalizedValue === 'unknown' ||
+    normalizedValue.includes('non renseign')
+  );
+}
+
+function getVehicleDisplayName(vehicle: VehicleListItem): string {
+  const brandName = isMissingVehicleLabel(vehicle.brandName)
+    ? ''
+    : vehicle.brandName.trim();
+  const model = isMissingVehicleLabel(vehicle.model) ? '' : vehicle.model.trim();
+
+  if (brandName && model) {
+    return `${brandName} ${model}`;
+  }
+
+  if (brandName) {
+    return `Véhicule ${brandName}`;
+  }
+
+  return model || 'Véhicule SMEIA';
+}
+
+function getVehicleMeta(vehicle: VehicleListItem): string {
+  return [
+    vehicle.yearValue === null ? null : vehicle.year,
+    vehicle.mileageValue === null ? null : vehicle.mileage,
+  ]
+    .filter((value): value is string => value !== null)
+    .join(' · ');
+}
+
 function getQuestionKey(question: AiDiagnosticQuestion, index: number): string {
   return `${question.id}:${index}`;
+}
+
+function composeAnswer(draft?: AnswerDraft): string {
+  const selectedOption = draft?.selectedOption.trim() ?? '';
+  const freeText = draft?.freeText.trim() ?? '';
+
+  if (selectedOption && freeText) {
+    return `${selectedOption} — Précision : ${freeText}`;
+  }
+
+  return selectedOption || freeText;
 }
 
 function getAnalysisErrorMessage(error: unknown): string {
@@ -254,6 +329,38 @@ function getWorkshopDisplayNames(
   });
 }
 
+function createSecureIdempotencyKey(): string | null {
+  try {
+    return expoUuid.v4();
+  } catch {
+    return null;
+  }
+}
+
+type BookingDateMode = 'earliest' | 'date';
+
+type BookingIdempotencyAttempt = {
+  idempotencyKey: string;
+  problemSummary: string;
+  slotToken: string;
+};
+
+const bookingStepLabels = [
+  'Atelier',
+  'Préférence',
+  'Créneau',
+  'Confirmation',
+] as const;
+
+const bookingPeriodOptions: ReadonlyArray<{
+  label: string;
+  value: AiBookingPreferredPeriod;
+}> = [
+  { label: 'Toute la journée', value: 'any' },
+  { label: 'Matin', value: 'morning' },
+  { label: 'Après-midi', value: 'afternoon' },
+];
+
 export function AiDiagnosticScreen() {
   const { width } = useWindowDimensions();
   const isNarrow = width < breakpoints.tablet;
@@ -270,7 +377,9 @@ export function AiDiagnosticScreen() {
   >([]);
   const [questions, setQuestions] = useState<AiDiagnosticQuestion[]>([]);
   const [questionMessage, setQuestionMessage] = useState('');
-  const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
+  const [answerDrafts, setAnswerDrafts] = useState<
+    Record<string, AnswerDraft>
+  >({});
   const [answerErrors, setAnswerErrors] = useState<Record<string, string>>({});
   const [flowBlockMessage, setFlowBlockMessage] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -528,7 +637,7 @@ export function AiDiagnosticScreen() {
     const nextErrors: Record<string, string> = {};
     const newAnswers = questions.map((question, index) => {
       const key = getQuestionKey(question, index);
-      const answer = (answerDrafts[key] ?? '').trim();
+      const answer = composeAnswer(answerDrafts[key]);
 
       if (answer.length === 0) {
         nextErrors[key] = 'Cette réponse est obligatoire.';
@@ -593,11 +702,29 @@ export function AiDiagnosticScreen() {
         showsVerticalScrollIndicator
       >
         <View style={[styles.hero, isNarrow && styles.heroNarrow]}>
+          <ExpoImage
+            accessible={false}
+            contentFit="cover"
+            contentPosition={isNarrow ? 'bottom center' : 'center'}
+            source={
+              isNarrow
+                ? require('@/assets/ai/smeia-ai-hero-mobile.webp')
+                : require('@/assets/ai/smeia-ai-hero-desktop.webp')
+            }
+            style={styles.heroBackdrop}
+          />
+          <View
+            pointerEvents="none"
+            style={[
+              styles.heroBackdropShade,
+              isNarrow && styles.heroBackdropShadeNarrow,
+            ]}
+          />
           <View pointerEvents="none" style={styles.heroHaloLarge} />
           <View pointerEvents="none" style={styles.heroHaloSmall} />
           <View pointerEvents="none" style={styles.heroRoadLine} />
 
-          <View style={styles.heroCopy}>
+          <View style={[styles.heroCopy, isNarrow && styles.heroCopyNarrow]}>
             <Text style={styles.heroEyebrow}>SMEIA INTELLIGENCE STUDIO</Text>
             <View style={styles.heroBadge}>
               <View style={styles.heroBadgeDot} />
@@ -618,8 +745,8 @@ export function AiDiagnosticScreen() {
             </View>
           </View>
 
-          <View style={styles.heroOrb}>
-            <IntelligenceOrb size={isNarrow ? 142 : 190} />
+          <View pointerEvents="none" style={styles.heroOrb}>
+            <IntelligenceOrb size={isNarrow ? 104 : 136} />
           </View>
         </View>
 
@@ -683,11 +810,21 @@ export function AiDiagnosticScreen() {
                 blockMessage={flowBlockMessage}
                 isPending={isPending}
                 message={questionMessage}
-                onAnswerChange={(key, value) => {
-                  setAnswerDrafts((current) => ({
-                    ...current,
-                    [key]: value,
-                  }));
+                onDraftChange={(key, change) => {
+                  setAnswerDrafts((current) => {
+                    const currentDraft = current[key] ?? {
+                      selectedOption: '',
+                      freeText: '',
+                    };
+
+                    return {
+                      ...current,
+                      [key]: {
+                        ...currentDraft,
+                        ...change,
+                      },
+                    };
+                  });
                   setAnswerErrors((current) => ({
                     ...current,
                     [key]: '',
@@ -702,11 +839,13 @@ export function AiDiagnosticScreen() {
 
             {journeyStep === 'result' && result ? (
               <DiagnosticResultPanel
+                isNarrow={isNarrow}
                 isServiceTypesLoading={serviceTypesQuery.isLoading}
                 isWorkshopsLoading={workshopsQuery.isLoading}
                 onReset={resetJourney}
                 photo={selectedPhoto}
                 result={result}
+                selectedVehicle={selectedVehicle}
                 serviceTypes={serviceTypesQuery.data ?? []}
                 workshops={workshopsQuery.data ?? []}
               />
@@ -818,7 +957,7 @@ function InitialStep({
           onBlur={onDescriptionBlur}
           onChangeText={onDescriptionChange}
           placeholder="Exemple : bruit au freinage, voyant moteur, vibration à l'accélération..."
-          placeholderTextColor="#8A97A8"
+          placeholderTextColor="#7892AA"
           style={[
             styles.input,
             styles.problemInput,
@@ -988,12 +1127,12 @@ function OptionalPhotoField({
 
 type QuestionsStepProps = {
   accumulatedAnswerCount: number;
-  answerDrafts: Record<string, string>;
+  answerDrafts: Record<string, AnswerDraft>;
   answerErrors: Record<string, string>;
   blockMessage: string | null;
   isPending: boolean;
   message: string;
-  onAnswerChange: (key: string, value: string) => void;
+  onDraftChange: (key: string, change: Partial<AnswerDraft>) => void;
   onReset: () => void;
   onSubmit: () => void;
   questions: AiDiagnosticQuestion[];
@@ -1006,11 +1145,20 @@ function QuestionsStep({
   blockMessage,
   isPending,
   message,
-  onAnswerChange,
+  onDraftChange,
   onReset,
   onSubmit,
   questions,
 }: QuestionsStepProps) {
+  const everyQuestionAnswered =
+    questions.length > 0 &&
+    questions.every((question, index) => {
+      const key = getQuestionKey(question, index);
+
+      return composeAnswer(answerDrafts[key]).length > 0;
+    });
+  const continueDisabled = isPending || !everyQuestionAnswered;
+
   return (
     <>
       <SectionIntro
@@ -1032,12 +1180,17 @@ function QuestionsStep({
             return (
               <DynamicQuestionField
                 key={key}
-                answer={answerDrafts[key] ?? ''}
+                draft={
+                  answerDrafts[key] ?? { selectedOption: '', freeText: '' }
+                }
                 disabled={isPending}
                 error={answerErrors[key]}
                 index={index}
-                onChange={(value) => {
-                  onAnswerChange(key, value);
+                onFreeTextChange={(freeText) => {
+                  onDraftChange(key, { freeText });
+                }}
+                onOptionChange={(selectedOption) => {
+                  onDraftChange(key, { selectedOption });
                 }}
                 question={question}
               />
@@ -1054,13 +1207,14 @@ function QuestionsStep({
         {!blockMessage ? (
           <Pressable
             accessibilityRole="button"
-            disabled={isPending}
+            accessibilityState={{ disabled: continueDisabled }}
+            disabled={continueDisabled}
             onPress={onSubmit}
             style={({ hovered, pressed }) => [
               styles.primaryAction,
-              hovered && !isPending && styles.primaryActionHovered,
-              pressed && !isPending && styles.pressed,
-              isPending && styles.disabled,
+              hovered && !continueDisabled && styles.primaryActionHovered,
+              pressed && !continueDisabled && styles.pressed,
+              continueDisabled && styles.disabled,
             ]}
           >
             <Text style={styles.primaryActionText}>
@@ -1090,22 +1244,25 @@ function QuestionsStep({
 }
 
 type DynamicQuestionFieldProps = {
-  answer: string;
+  draft: AnswerDraft;
   disabled: boolean;
   error?: string;
   index: number;
-  onChange: (answer: string) => void;
+  onFreeTextChange: (freeText: string) => void;
+  onOptionChange: (selectedOption: string) => void;
   question: AiDiagnosticQuestion;
 };
 
 function DynamicQuestionField({
-  answer,
+  draft,
   disabled,
   error,
   index,
-  onChange,
+  onFreeTextChange,
+  onOptionChange,
   question,
 }: DynamicQuestionFieldProps) {
+  const [isFreeTextFocused, setIsFreeTextFocused] = useState(false);
   const choices =
     question.answer_type === 'yes_no'
       ? ['Oui', 'Non']
@@ -1121,7 +1278,7 @@ function DynamicQuestionField({
       {choices.length > 0 ? (
         <View style={styles.choiceList}>
           {choices.map((choice) => {
-            const selected = answer === choice;
+            const selected = draft.selectedOption === choice;
 
             return (
               <Pressable
@@ -1130,7 +1287,7 @@ function DynamicQuestionField({
                 accessibilityState={{ disabled, selected }}
                 disabled={disabled}
                 onPress={() => {
-                  onChange(choice);
+                  onOptionChange(choice);
                 }}
                 style={({ hovered, pressed }) => [
                   styles.choiceButton,
@@ -1152,24 +1309,39 @@ function DynamicQuestionField({
             );
           })}
         </View>
-      ) : (
+      ) : null}
+
+      <View style={styles.freeAnswerField}>
+        <Text style={styles.freeAnswerLabel}>Autre réponse ou précision</Text>
         <TextInput
-          accessibilityLabel={question.text}
+          accessibilityLabel={`Autre réponse ou précision pour : ${question.text}`}
           editable={!disabled}
           maxLength={MAX_ANSWER_LENGTH}
           multiline
-          onChangeText={onChange}
-          placeholder="Votre réponse..."
-          placeholderTextColor="#8A97A8"
+          numberOfLines={4}
+          onBlur={() => {
+            setIsFreeTextFocused(false);
+          }}
+          onChangeText={onFreeTextChange}
+          onFocus={() => {
+            setIsFreeTextFocused(true);
+          }}
+          placeholder="Écrivez votre réponse avec vos propres mots…"
+          placeholderTextColor="#7892AA"
           style={[
             styles.input,
             styles.answerInput,
+            isFreeTextFocused ? styles.answerInputFocused : null,
             error ? styles.inputError : null,
           ]}
           textAlignVertical="top"
-          value={answer}
+          value={draft.freeText}
         />
-      )}
+
+        <Text style={[styles.characterCount, styles.freeAnswerCounter]}>
+          {draft.freeText.length}/{MAX_ANSWER_LENGTH}
+        </Text>
+      </View>
 
       <View style={styles.inputMetaRow}>
         {error ? (
@@ -1177,33 +1349,34 @@ function DynamicQuestionField({
             {error}
           </Text>
         ) : (
-          <Text style={styles.fieldHint}>Réponse obligatoire</Text>
-        )}
-        {choices.length === 0 ? (
-          <Text style={styles.characterCount}>
-            {answer.length}/{MAX_ANSWER_LENGTH}
+          <Text style={styles.fieldHint}>
+            Sélectionnez une option ou saisissez une réponse libre
           </Text>
-        ) : null}
+        )}
       </View>
     </View>
   );
 }
 
 type DiagnosticResultPanelProps = {
+  isNarrow: boolean;
   isServiceTypesLoading: boolean;
   isWorkshopsLoading: boolean;
   photo: SelectedAiPhoto | null;
   result: AiDiagnosticResult;
+  selectedVehicle: VehicleListItem | null;
   serviceTypes: readonly DictionaryItem[];
   workshops: readonly Workshop[];
   onReset: () => void;
 };
 
 function DiagnosticResultPanel({
+  isNarrow,
   isServiceTypesLoading,
   isWorkshopsLoading,
   photo,
   result,
+  selectedVehicle,
   serviceTypes,
   workshops,
   onReset,
@@ -1446,18 +1619,987 @@ function DiagnosticResultPanel({
         </View>
       </View>
 
-      <Pressable
-        accessibilityRole="button"
-        onPress={onReset}
-        style={({ hovered, pressed }) => [
-          styles.primaryAction,
-          hovered && styles.primaryActionHovered,
-          pressed && styles.pressed,
+      {result.diagnosis_status === 'ready' && selectedVehicle ? (
+        <AiBookingPanel
+          isNarrow={isNarrow}
+          onReset={onReset}
+          result={result}
+          selectedVehicle={selectedVehicle}
+          serviceTypeName={serviceTypeName}
+          workshops={workshops}
+        />
+      ) : null}
+
+      {!selectedVehicle ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={onReset}
+          style={({ hovered, pressed }) => [
+            styles.primaryAction,
+            hovered && styles.primaryActionHovered,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.primaryActionText}>Nouvelle analyse</Text>
+        </Pressable>
+      ) : null}
+    </>
+  );
+}
+
+type AiBookingPanelProps = {
+  isNarrow: boolean;
+  onReset: () => void;
+  result: AiDiagnosticResult;
+  selectedVehicle: VehicleListItem;
+  serviceTypeName: string;
+  workshops: readonly Workshop[];
+};
+
+function AiBookingPanel({
+  isNarrow,
+  onReset,
+  result,
+  selectedVehicle,
+  serviceTypeName,
+  workshops,
+}: AiBookingPanelProps) {
+  const availabilityMutation = useSearchAiAppointmentAvailability();
+  const confirmationMutation = useConfirmAiAppointment();
+  const availabilityLockRef = useRef(false);
+  const confirmationLockRef = useRef(false);
+  const idempotencyAttemptRef = useRef<BookingIdempotencyAttempt | null>(null);
+  const [selectedWorkshopId, setSelectedWorkshopId] =
+    useState<AiDiagnosticWorkshopId | null>(null);
+  const [dateMode, setDateMode] = useState<BookingDateMode>('earliest');
+  const [preferredDate, setPreferredDate] = useState('');
+  const [preferredPeriod, setPreferredPeriod] =
+    useState<AiBookingPreferredPeriod>('any');
+  const [availability, setAvailability] =
+    useState<AiBookingAvailabilityResult | null>(null);
+  const [selectedOption, setSelectedOption] =
+    useState<AiBookingAvailabilityOption | null>(null);
+  const [bookingSuccess, setBookingSuccess] =
+    useState<AiBookingConfirmationResult | null>(null);
+  const [bookingError, setBookingError] = useState<string | null>(null);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const [requiresNewSearch, setRequiresNewSearch] = useState(false);
+  const [expirationNow, setExpirationNow] = useState(() => Date.now());
+  const serviceTypeId = result.suggested_service_type_id;
+  const recommendedWorkshops = useMemo(
+    () =>
+      result.suggested_workshop_ids.map((workshopId) => ({
+        id: workshopId,
+        name:
+          workshops.find((workshop) => workshop.id === workshopId)?.name.trim() ||
+          "Nom de l'atelier indisponible",
+      })),
+    [result.suggested_workshop_ids, workshops]
+  );
+  const bookingStep: 1 | 2 | 3 | 4 = selectedOption
+    ? 4
+    : availability
+      ? 3
+      : selectedWorkshopId
+        ? 2
+        : 1;
+  const isBookingPending =
+    availabilityMutation.isPending || confirmationMutation.isPending;
+  const selectedOptionExpired = selectedOption
+    ? isBookingOptionExpired(selectedOption.expires_at, expirationNow)
+    : false;
+
+  useEffect(() => {
+    if (!availability && !selectedOption) {
+      return;
+    }
+
+    const now = Date.now();
+    const nextExpiration = [
+      ...(availability?.options ?? []),
+      ...(selectedOption ? [selectedOption] : []),
+    ]
+      .map((option) => Date.parse(option.expires_at))
+      .filter((expiration) => Number.isFinite(expiration) && expiration > now)
+      .sort((left, right) => left - right)[0];
+
+    if (nextExpiration === undefined) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      setExpirationNow(Date.now());
+    }, Math.max(0, nextExpiration - now) + 50);
+
+    return () => {
+      clearTimeout(timeout);
+    };
+  }, [availability, expirationNow, selectedOption]);
+
+  const clearSelectedOffer = () => {
+    setSelectedOption(null);
+    idempotencyAttemptRef.current = null;
+    confirmationMutation.reset();
+  };
+
+  const clearAvailability = () => {
+    setAvailability(null);
+    clearSelectedOffer();
+    availabilityMutation.reset();
+    setRequiresNewSearch(false);
+  };
+
+  const handleWorkshopSelection = (workshopId: AiDiagnosticWorkshopId) => {
+    if (isBookingPending) {
+      return;
+    }
+
+    if (workshopId !== selectedWorkshopId) {
+      clearAvailability();
+      setBookingError(null);
+      setPreferenceError(null);
+      setSelectedWorkshopId(workshopId);
+    }
+  };
+
+  const handleDateModeChange = (nextMode: BookingDateMode) => {
+    if (isBookingPending || nextMode === dateMode) {
+      return;
+    }
+
+    clearAvailability();
+    setBookingError(null);
+    setPreferenceError(null);
+    setDateMode(nextMode);
+  };
+
+  const handlePreferredDateChange = (value: string) => {
+    if (isBookingPending) {
+      return;
+    }
+
+    clearAvailability();
+    setBookingError(null);
+    setPreferenceError(null);
+    setPreferredDate(value);
+  };
+
+  const handlePeriodChange = (period: AiBookingPreferredPeriod) => {
+    if (isBookingPending || period === preferredPeriod) {
+      return;
+    }
+
+    clearAvailability();
+    setBookingError(null);
+    setPreferenceError(null);
+    setPreferredPeriod(period);
+  };
+
+  const handleAvailabilitySearch = () => {
+    if (
+      availabilityLockRef.current ||
+      availabilityMutation.isPending ||
+      confirmationMutation.isPending ||
+      selectedWorkshopId === null ||
+      serviceTypeId === null
+    ) {
+      return;
+    }
+
+    const requestedDate = dateMode === 'earliest' ? null : preferredDate.trim();
+
+    if (
+      requestedDate !== null &&
+      !isValidBookingDate(requestedDate, getCasablancaTodayIso())
+    ) {
+      setPreferenceError(
+        'Choisissez une date valide, au format AAAA-MM-JJ, qui ne soit pas passée.'
+      );
+      return;
+    }
+
+    availabilityLockRef.current = true;
+    setPreferenceError(null);
+    setBookingError(null);
+    setAvailability(null);
+    clearSelectedOffer();
+    setBookingSuccess(null);
+    setRequiresNewSearch(false);
+
+    availabilityMutation.mutate(
+      {
+        vehicle_id: selectedVehicle.id,
+        service_type_id: serviceTypeId,
+        workshop_ids: [selectedWorkshopId],
+        preferred_date: requestedDate,
+        preferred_period: preferredPeriod,
+      },
+      {
+        onSuccess: (response) => {
+          setExpirationNow(Date.now());
+          setAvailability({
+            preferred_date_available: response.preferred_date_available,
+            options: response.options.slice(0, 3),
+          });
+          availabilityMutation.reset();
+        },
+        onError: (error) => {
+          setBookingError(getAiBookingErrorMessage(error));
+        },
+        onSettled: () => {
+          availabilityLockRef.current = false;
+        },
+      }
+    );
+  };
+
+  const handleOptionSelection = (option: AiBookingAvailabilityOption) => {
+    if (isBookingPending) {
+      return;
+    }
+
+    if (isBookingOptionExpired(option.expires_at)) {
+      clearAvailability();
+      setBookingError(
+        'Ce créneau a expiré. Recherchez de nouvelles disponibilités.'
+      );
+      setRequiresNewSearch(true);
+      return;
+    }
+
+    if (selectedOption?.slot_token !== option.slot_token) {
+      idempotencyAttemptRef.current = null;
+      confirmationMutation.reset();
+    }
+
+    setSelectedOption(option);
+    setBookingError(null);
+    setRequiresNewSearch(false);
+  };
+
+  const handleConfirmation = () => {
+    if (
+      confirmationLockRef.current ||
+      confirmationMutation.isPending ||
+      availabilityMutation.isPending ||
+      selectedOption === null
+    ) {
+      return;
+    }
+
+    if (isBookingOptionExpired(selectedOption.expires_at)) {
+      clearAvailability();
+      setBookingError(
+        'Ce créneau a expiré. Recherchez de nouvelles disponibilités.'
+      );
+      setRequiresNewSearch(true);
+      return;
+    }
+
+    const existingAttempt = idempotencyAttemptRef.current;
+    const isSameAttempt =
+      existingAttempt?.slotToken === selectedOption.slot_token &&
+      existingAttempt.problemSummary === result.problem_summary;
+    const idempotencyKey = isSameAttempt
+      ? existingAttempt.idempotencyKey
+      : createSecureIdempotencyKey();
+
+    if (!idempotencyKey) {
+      setBookingError(
+        'La confirmation sécurisée n’est pas disponible sur cet appareil.'
+      );
+      return;
+    }
+
+    if (!isSameAttempt) {
+      idempotencyAttemptRef.current = {
+        idempotencyKey,
+        problemSummary: result.problem_summary,
+        slotToken: selectedOption.slot_token,
+      };
+    }
+
+    confirmationLockRef.current = true;
+    setBookingError(null);
+    confirmationMutation.mutate(
+      {
+        idempotencyKey,
+        input: {
+          slot_token: selectedOption.slot_token,
+          problem_summary: result.problem_summary,
+          confirmation: true,
+        },
+      },
+      {
+        onSuccess: (createdAppointment) => {
+          idempotencyAttemptRef.current = null;
+          setAvailability(null);
+          setSelectedOption(null);
+          setBookingSuccess(createdAppointment);
+          setRequiresNewSearch(false);
+          availabilityMutation.reset();
+          confirmationMutation.reset();
+        },
+        onError: (error) => {
+          setBookingError(getAiBookingErrorMessage(error));
+
+          if (isBookingConflict(error)) {
+            idempotencyAttemptRef.current = null;
+            setAvailability(null);
+            setSelectedOption(null);
+            setRequiresNewSearch(true);
+            availabilityMutation.reset();
+            confirmationMutation.reset();
+          }
+        },
+        onSettled: () => {
+          confirmationLockRef.current = false;
+        },
+      }
+    );
+  };
+
+  if (bookingSuccess) {
+    return (
+      <View
+        accessibilityLiveRegion="polite"
+        style={[
+          styles.bookingShell,
+          isNarrow && styles.bookingShellNarrow,
+          styles.bookingSuccessShell,
         ]}
       >
-        <Text style={styles.primaryActionText}>Nouvelle analyse</Text>
-      </Pressable>
-    </>
+        <View style={styles.bookingSuccessBadge}>
+          <Text style={styles.bookingSuccessBadgeText}>DEMANDE ENVOYÉE</Text>
+        </View>
+        <Text style={styles.bookingTitle}>Demande envoyée avec succès</Text>
+        <Text style={styles.bookingLead}>
+          Votre demande a été transmise au service SAV. Vous serez informé
+          après validation.
+        </Text>
+
+        <View style={styles.bookingSummaryGrid}>
+          <BookingSummaryItem
+            label="Numéro du rendez-vous"
+            value={`#${bookingSuccess.appointment_id}`}
+          />
+          <BookingSummaryItem label="Statut" value="En attente" />
+          <BookingSummaryItem
+            label="Véhicule"
+            value={bookingSuccess.vehicle.label}
+          />
+          <BookingSummaryItem
+            label="Service"
+            value={bookingSuccess.service_type.name}
+          />
+          <BookingSummaryItem
+            label="Atelier"
+            value={bookingSuccess.workshop.name}
+          />
+          <BookingSummaryItem
+            label="Showroom"
+            value={bookingSuccess.showroom.name}
+          />
+          <BookingSummaryItem
+            label="Date"
+            value={formatBookingDate(bookingSuccess.requested_date)}
+          />
+          <BookingSummaryItem
+            label="Heure"
+            value={formatBookingTime(bookingSuccess.requested_time)}
+          />
+        </View>
+
+        <Link href="/history" asChild>
+          <Pressable
+            accessibilityRole="link"
+            style={({ hovered, pressed }) => [
+              styles.bookingPrimaryAction,
+              hovered && styles.bookingPrimaryActionHovered,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.bookingPrimaryActionText}>
+              Voir mes rendez-vous
+            </Text>
+          </Pressable>
+        </Link>
+        <BookingResetButton disabled={false} onReset={onReset} />
+      </View>
+    );
+  }
+
+  if (serviceTypeId === null) {
+    return (
+      <View
+        style={[styles.bookingShell, isNarrow && styles.bookingShellNarrow]}
+      >
+        <Text style={styles.bookingTitle}>Planifier mon rendez-vous</Text>
+        <ControlledErrorPanel
+          message="Aucun service réservable n’a été proposé par cette orientation."
+          title="Réservation indisponible"
+        />
+        <BookingResetButton disabled={false} onReset={onReset} />
+      </View>
+    );
+  }
+
+  return (
+    <View
+      style={[styles.bookingShell, isNarrow && styles.bookingShellNarrow]}
+    >
+      <View style={styles.bookingHeader}>
+        <View
+          style={[
+            styles.bookingHeaderCopy,
+            isNarrow && styles.bookingHeaderCopyNarrow,
+          ]}
+        >
+          <Text style={styles.bookingKicker}>PRISE EN CHARGE SMEIA</Text>
+          <Text style={styles.bookingTitle}>Planifier mon rendez-vous</Text>
+          <Text style={styles.bookingLead}>
+            Choisissez un atelier recommandé, puis consultez les créneaux réels
+            proposés par le service SAV.
+          </Text>
+        </View>
+        <View style={styles.bookingPendingBadge}>
+          <Text style={styles.bookingPendingBadgeText}>
+            Validation SAV requise
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.bookingProgress}>
+        {bookingStepLabels.map((label, index) => {
+          const step = (index + 1) as 1 | 2 | 3 | 4;
+          const isActive = step === bookingStep;
+          const isComplete = step < bookingStep;
+
+          return (
+            <View
+              accessible
+              accessibilityLabel={`Étape ${step} sur 4 : ${label}${isActive ? ', étape actuelle' : isComplete ? ', terminée' : ''}`}
+              key={label}
+              style={[
+                styles.bookingProgressItem,
+                isNarrow && styles.bookingProgressItemNarrow,
+                isActive && styles.bookingProgressItemActive,
+                isComplete && styles.bookingProgressItemComplete,
+              ]}
+            >
+              <View
+                style={[
+                  styles.bookingProgressIndex,
+                  (isActive || isComplete) &&
+                    styles.bookingProgressIndexHighlighted,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.bookingProgressIndexText,
+                    (isActive || isComplete) &&
+                      styles.bookingProgressIndexTextHighlighted,
+                  ]}
+                >
+                  {step}
+                </Text>
+              </View>
+              <Text
+                style={[
+                  styles.bookingProgressLabel,
+                  (isActive || isComplete) &&
+                    styles.bookingProgressLabelHighlighted,
+                ]}
+              >
+                {label}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+
+      <View
+        style={[
+          styles.bookingSection,
+          isNarrow && styles.bookingSectionNarrow,
+        ]}
+      >
+        <Text style={styles.bookingSectionKicker}>ÉTAPE 1</Text>
+        <Text style={styles.bookingSectionTitle}>Choisissez votre atelier</Text>
+        <Text style={styles.bookingSectionText}>
+          Seuls les ateliers recommandés par l’orientation IA sont proposés.
+        </Text>
+
+        {recommendedWorkshops.length > 0 ? (
+          <View style={styles.bookingWorkshopGrid}>
+            {recommendedWorkshops.map((workshop) => {
+              const selected = selectedWorkshopId === workshop.id;
+
+              return (
+                <Pressable
+                  key={workshop.id}
+                  accessibilityLabel={`Choisir ${workshop.name}`}
+                  accessibilityRole="button"
+                  accessibilityState={{
+                    disabled: isBookingPending,
+                    selected,
+                  }}
+                  disabled={isBookingPending}
+                  onPress={() => {
+                    handleWorkshopSelection(workshop.id);
+                  }}
+                  style={({ hovered, pressed }) => [
+                    styles.bookingWorkshopCard,
+                    isNarrow && styles.bookingCardNarrow,
+                    selected && styles.bookingWorkshopCardSelected,
+                    hovered && !isBookingPending &&
+                      styles.bookingWorkshopCardHovered,
+                    pressed && styles.pressed,
+                    isBookingPending && styles.disabled,
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.bookingSelectionDot,
+                      selected && styles.bookingSelectionDotSelected,
+                    ]}
+                  />
+                  <View style={styles.bookingWorkshopCopy}>
+                    <Text style={styles.bookingSmallLabel}>
+                      Atelier recommandé
+                    </Text>
+                    <Text style={styles.bookingWorkshopName}>
+                      {workshop.name}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : (
+          <Text style={styles.bookingEmptyText}>
+            Aucun atelier réservable n’est disponible pour cette orientation.
+          </Text>
+        )}
+      </View>
+
+      {selectedWorkshopId !== null ? (
+        <View
+          style={[
+            styles.bookingSection,
+            isNarrow && styles.bookingSectionNarrow,
+          ]}
+        >
+          <Text style={styles.bookingSectionKicker}>ÉTAPE 2</Text>
+          <Text style={styles.bookingSectionTitle}>
+            Indiquez votre préférence
+          </Text>
+          <Text style={styles.bookingSectionText}>
+            Les dates et horaires disponibles seront exclusivement calculés à
+            partir de Directus. Fuseau : {AI_BOOKING_TIME_ZONE}.
+          </Text>
+
+          <View style={styles.bookingModeRow}>
+            <BookingChoiceButton
+              disabled={isBookingPending}
+              label="Premier créneau disponible"
+              onPress={() => {
+                handleDateModeChange('earliest');
+              }}
+              selected={dateMode === 'earliest'}
+            />
+            <BookingChoiceButton
+              disabled={isBookingPending}
+              label="Choisir une date"
+              onPress={() => {
+                handleDateModeChange('date');
+              }}
+              selected={dateMode === 'date'}
+            />
+          </View>
+
+          {dateMode === 'date' ? (
+            <View style={styles.bookingDateField}>
+              <Text style={styles.bookingFieldLabel}>Date souhaitée</Text>
+              <TextInput
+                accessibilityLabel="Date souhaitée au format année mois jour"
+                autoCapitalize="none"
+                editable={!isBookingPending}
+                maxLength={10}
+                onChangeText={handlePreferredDateChange}
+                placeholder="AAAA-MM-JJ"
+                placeholderTextColor="#6F8AA1"
+                style={[
+                  styles.bookingInput,
+                  preferenceError && styles.bookingInputError,
+                ]}
+                value={preferredDate}
+              />
+              <Text style={styles.bookingFieldHint}>
+                À partir du {getCasablancaTodayIso()} inclus
+              </Text>
+            </View>
+          ) : null}
+
+          <Text style={styles.bookingFieldLabel}>Période</Text>
+          <View style={styles.bookingPeriodRow}>
+            {bookingPeriodOptions.map((period) => (
+              <BookingChoiceButton
+                key={period.value}
+                disabled={isBookingPending}
+                label={period.label}
+                onPress={() => {
+                  handlePeriodChange(period.value);
+                }}
+                selected={preferredPeriod === period.value}
+              />
+            ))}
+          </View>
+
+          {preferenceError ? (
+            <Text accessibilityLiveRegion="polite" style={styles.fieldError}>
+              {preferenceError}
+            </Text>
+          ) : null}
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ disabled: isBookingPending }}
+            disabled={isBookingPending}
+            onPress={handleAvailabilitySearch}
+            style={({ hovered, pressed }) => [
+              styles.bookingPrimaryAction,
+              hovered && !isBookingPending &&
+                styles.bookingPrimaryActionHovered,
+              pressed && styles.pressed,
+              isBookingPending && styles.disabled,
+            ]}
+          >
+            <Text style={styles.bookingPrimaryActionText}>
+              {availabilityMutation.isPending
+                ? 'Recherche en cours…'
+                : requiresNewSearch
+                  ? 'Rechercher de nouveaux créneaux'
+                  : 'Rechercher les créneaux'}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {bookingError ? (
+        <ControlledErrorPanel
+          message={bookingError}
+          title="Réservation indisponible"
+        />
+      ) : null}
+
+      {availability ? (
+        <View
+          style={[
+            styles.bookingSection,
+            isNarrow && styles.bookingSectionNarrow,
+          ]}
+        >
+          <Text style={styles.bookingSectionKicker}>ÉTAPE 3</Text>
+          <Text style={styles.bookingSectionTitle}>
+            Choisissez un créneau réel
+          </Text>
+
+          {!availability.preferred_date_available &&
+          availability.options.length > 0 ? (
+            <View style={styles.bookingAlternativeNotice}>
+              <Text style={styles.bookingAlternativeText}>
+                La date souhaitée n’est plus disponible. Voici les créneaux les
+                plus proches.
+              </Text>
+            </View>
+          ) : null}
+
+          {availability.options.length > 0 ? (
+            <View style={styles.bookingOptionsGrid}>
+              {availability.options.map((option) => {
+                const expired = isBookingOptionExpired(
+                  option.expires_at,
+                  expirationNow
+                );
+                const selected =
+                  selectedOption?.slot_token === option.slot_token;
+
+                return (
+                  <Pressable
+                    key={`${option.workshop_id}:${option.requested_date}:${option.requested_time}`}
+                    accessibilityLabel={`${option.workshop_name}, ${formatBookingDate(option.requested_date)} à ${formatBookingTime(option.requested_time)}`}
+                    accessibilityRole="button"
+                    accessibilityState={{
+                      disabled: expired || isBookingPending,
+                      selected,
+                    }}
+                    disabled={expired || isBookingPending}
+                    onPress={() => {
+                      handleOptionSelection(option);
+                    }}
+                    style={({ hovered, pressed }) => [
+                      styles.bookingOptionCard,
+                      isNarrow && styles.bookingCardNarrow,
+                      selected && styles.bookingOptionCardSelected,
+                      hovered && !expired && !isBookingPending &&
+                        styles.bookingOptionCardHovered,
+                      (expired || isBookingPending) && styles.disabled,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <View style={styles.bookingOptionHeader}>
+                      <Text style={styles.bookingOptionDate}>
+                        {formatBookingDate(option.requested_date)}
+                      </Text>
+                      <View
+                        style={[
+                          styles.bookingAvailableBadge,
+                          expired && styles.bookingExpiredBadge,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.bookingAvailableBadgeText,
+                            expired && styles.bookingExpiredBadgeText,
+                          ]}
+                        >
+                          {expired ? 'Expiré' : 'Disponible'}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.bookingOptionTime}>
+                      {formatBookingTime(option.requested_time)}
+                    </Text>
+                    <Text style={styles.bookingOptionService}>
+                      {option.service_type.name}
+                    </Text>
+                    <BookingDetailLine
+                      label="Atelier"
+                      value={option.workshop_name}
+                    />
+                    <BookingDetailLine
+                      label="Showroom"
+                      value={option.showroom.name}
+                    />
+                    <BookingDetailLine
+                      label="Ville"
+                      value={option.showroom.city ?? 'Non renseignée'}
+                    />
+                    <BookingDetailLine
+                      label="Adresse"
+                      value={option.showroom.address ?? 'Non renseignée'}
+                    />
+                    <BookingDetailLine
+                      label="Téléphone"
+                      value={option.showroom.phone ?? 'Non renseigné'}
+                    />
+                    <BookingDetailLine
+                      label="Intervalle"
+                      value={`${option.slot_interval_minutes} minutes`}
+                    />
+                    {expired ? (
+                      <Text style={styles.bookingExpiredText}>
+                        Ce créneau a expiré. Recherchez de nouvelles
+                        disponibilités.
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : (
+            <Text style={styles.bookingEmptyText}>
+              Aucun créneau disponible pour cette préférence. Essayez une autre
+              date ou un autre atelier.
+            </Text>
+          )}
+        </View>
+      ) : null}
+
+      {selectedOption ? (
+        <View
+          style={[
+            styles.bookingSection,
+            isNarrow && styles.bookingSectionNarrow,
+            styles.bookingConfirmationSection,
+          ]}
+        >
+          <Text style={styles.bookingSectionKicker}>ÉTAPE 4</Text>
+          <Text style={styles.bookingSectionTitle}>
+            Vérifiez votre demande
+          </Text>
+          <Text style={styles.bookingSectionText}>
+            Aucun rendez-vous ne sera créé avant votre confirmation explicite.
+          </Text>
+
+          <View style={styles.bookingSummaryGrid}>
+            <BookingSummaryItem
+              label="Véhicule"
+              value={getVehicleDisplayName(selectedVehicle)}
+            />
+            <BookingSummaryItem
+              label="Prestation"
+              value={selectedOption.service_type.name || serviceTypeName}
+            />
+            <BookingSummaryItem
+              label="Atelier"
+              value={selectedOption.workshop_name}
+            />
+            <BookingSummaryItem
+              label="Showroom"
+              value={selectedOption.showroom.name}
+            />
+            <BookingSummaryItem
+              label="Date"
+              value={formatBookingDate(selectedOption.requested_date)}
+            />
+            <BookingSummaryItem
+              label="Heure"
+              value={formatBookingTime(selectedOption.requested_time)}
+            />
+          </View>
+
+          <View style={styles.bookingProblemSummary}>
+            <Text style={styles.bookingSmallLabel}>Résumé du problème</Text>
+            <Text style={styles.bookingProblemSummaryText}>
+              {result.problem_summary}
+            </Text>
+          </View>
+
+          <View style={styles.bookingFutureStatus}>
+            <Text style={styles.bookingFutureStatusText}>
+              Statut après envoi : Demande en attente de validation SAV
+            </Text>
+          </View>
+
+          {selectedOptionExpired ? (
+            <Text
+              accessibilityLiveRegion="polite"
+              style={styles.bookingExpiredText}
+            >
+              Ce créneau a expiré. Recherchez de nouvelles disponibilités.
+            </Text>
+          ) : null}
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{
+              disabled: isBookingPending || selectedOptionExpired,
+            }}
+            disabled={isBookingPending || selectedOptionExpired}
+            onPress={handleConfirmation}
+            style={({ hovered, pressed }) => [
+              styles.bookingPrimaryAction,
+              hovered && !isBookingPending && !selectedOptionExpired &&
+                styles.bookingPrimaryActionHovered,
+              pressed && styles.pressed,
+              (isBookingPending || selectedOptionExpired) && styles.disabled,
+            ]}
+          >
+            <Text style={styles.bookingPrimaryActionText}>
+              {confirmationMutation.isPending
+                ? 'Confirmation en cours…'
+                : 'Confirmer la demande de rendez-vous'}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      <BookingResetButton
+        disabled={isBookingPending}
+        onReset={onReset}
+      />
+    </View>
+  );
+}
+
+function BookingResetButton({
+  disabled,
+  onReset,
+}: {
+  disabled: boolean;
+  onReset: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onReset}
+      style={({ hovered, pressed }) => [
+        styles.bookingSecondaryAction,
+        hovered && !disabled && styles.bookingSecondaryActionHovered,
+        disabled && styles.disabled,
+        pressed && styles.pressed,
+      ]}
+    >
+      <Text style={styles.bookingSecondaryActionText}>Nouvelle analyse</Text>
+    </Pressable>
+  );
+}
+
+type BookingChoiceButtonProps = {
+  disabled: boolean;
+  label: string;
+  onPress: () => void;
+  selected: boolean;
+};
+
+function BookingChoiceButton({
+  disabled,
+  label,
+  onPress,
+  selected,
+}: BookingChoiceButtonProps) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled, selected }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.bookingChoiceButton,
+        selected && styles.bookingChoiceButtonSelected,
+        hovered && !disabled && styles.bookingChoiceButtonHovered,
+        disabled && styles.disabled,
+        pressed && styles.pressed,
+      ]}
+    >
+      <Text
+        style={[
+          styles.bookingChoiceButtonText,
+          selected && styles.bookingChoiceButtonTextSelected,
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function BookingDetailLine({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.bookingDetailLine}>
+      <Text style={styles.bookingDetailLabel}>{label}</Text>
+      <Text style={styles.bookingDetailValue}>{value}</Text>
+    </View>
+  );
+}
+
+function BookingSummaryItem({ label, value }: { label: string; value: string }) {
+  const { width } = useWindowDimensions();
+
+  return (
+    <View
+      style={[
+        styles.bookingSummaryItem,
+        width < breakpoints.tablet && styles.bookingCardNarrow,
+      ]}
+    >
+      <Text style={styles.bookingSummaryLabel}>{label}</Text>
+      <Text style={styles.bookingSummaryValue}>{value}</Text>
+    </View>
   );
 }
 
@@ -1588,7 +2730,7 @@ function JourneyAside({
         <View style={styles.progressBox}>
           <Text style={styles.previewLabel}>Véhicule sélectionné</Text>
           <Text style={styles.selectedVehicleText}>
-            {selectedVehicle.brandName} {selectedVehicle.model}
+            {getVehicleDisplayName(selectedVehicle)}
           </Text>
         </View>
       ) : null}
@@ -1598,6 +2740,16 @@ function JourneyAside({
           Aucune donnée de rendez-vous ou ligne de diagnostic n'est créée à
           cette étape.
         </Text>
+      </View>
+      <View pointerEvents="none" style={styles.blueprintPanel}>
+        <View style={styles.blueprintGlow} />
+        <ExpoImage
+          accessible={false}
+          contentFit="contain"
+          resizeMode="contain"
+          source={require('@/assets/ai/smeia-ai-vehicle-blueprint.png')}
+          style={styles.blueprintImage}
+        />
       </View>
     </>
   );
@@ -1627,7 +2779,7 @@ function ControlledErrorPanel({
   title: string;
 }) {
   return (
-    <View style={styles.submitErrorBox}>
+    <View accessibilityLiveRegion="polite" style={styles.submitErrorBox}>
       <View style={styles.errorIcon}>
         <Text style={styles.errorIconText}>!</Text>
       </View>
@@ -1652,6 +2804,8 @@ function SelectableVehicleCard({
   vehicle,
   onPress,
 }: SelectableVehicleCardProps) {
+  const vehicleMeta = getVehicleMeta(vehicle);
+
   return (
     <Pressable
       accessibilityRole="button"
@@ -1667,17 +2821,15 @@ function SelectableVehicleCard({
       ]}
     >
       <View style={styles.vehicleHeader}>
-        <Text style={styles.vehicleBrand}>{vehicle.brandName}</Text>
+        <Text style={styles.vehicleBrand}>Véhicule SMEIA</Text>
         <View style={styles.registrationBadge}>
           <Text style={styles.registrationText}>
             {vehicle.registrationNumber}
           </Text>
         </View>
       </View>
-      <Text style={styles.vehicleModel}>{vehicle.model}</Text>
-      <Text style={styles.vehicleMeta}>
-        {vehicle.year} · {vehicle.mileage}
-      </Text>
+      <Text style={styles.vehicleModel}>{getVehicleDisplayName(vehicle)}</Text>
+      {vehicleMeta ? <Text style={styles.vehicleMeta}>{vehicleMeta}</Text> : null}
     </Pressable>
   );
 }
@@ -1744,16 +2896,20 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     padding: spacing.lg,
+    backgroundColor: '#020914',
   },
   contentScroll: {
     flex: 1,
+    backgroundColor: '#020914',
+    experimental_backgroundImage:
+      'linear-gradient(145deg, #020914 0%, #041426 46%, #03101E 100%)',
   },
   content: {
     width: '100%',
     maxWidth: 1240,
     alignSelf: 'center',
     gap: spacing.lg,
-    padding: spacing.sm,
+    padding: spacing.md,
     paddingBottom: spacing.xxl,
   },
   hero: {
@@ -1775,8 +2931,30 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 34,
   },
+  heroBackdrop: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
+  heroBackdropShade: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(3, 15, 32, 0.14)',
+    experimental_backgroundImage:
+      'linear-gradient(90deg, rgba(3, 14, 30, 0.98) 0%, rgba(3, 15, 32, 0.85) 34%, rgba(3, 18, 38, 0.2) 68%, rgba(3, 18, 38, 0.08) 100%)',
+  },
+  heroBackdropShadeNarrow: {
+    backgroundColor: 'rgba(3, 15, 32, 0.18)',
+    experimental_backgroundImage:
+      'linear-gradient(180deg, rgba(3, 14, 30, 0.98) 0%, rgba(3, 15, 32, 0.82) 48%, rgba(3, 18, 38, 0.16) 100%)',
+  },
   heroNarrow: {
-    minHeight: 470,
+    minHeight: 540,
     flexDirection: 'column',
     alignItems: 'stretch',
     padding: spacing.lg,
@@ -1810,10 +2988,15 @@ const styles = StyleSheet.create({
   },
   heroCopy: {
     flex: 1,
-    maxWidth: 760,
+    maxWidth: 610,
     alignItems: 'flex-start',
     gap: spacing.sm,
     zIndex: 1,
+  },
+  heroCopyNarrow: {
+    width: '100%',
+    maxWidth: '100%',
+    paddingTop: 106,
   },
   heroEyebrow: {
     color: '#78CEE5',
@@ -1873,8 +3056,16 @@ const styles = StyleSheet.create({
     lineHeight: typography.lineHeight.xs,
   },
   heroOrb: {
+    position: 'absolute',
+    top: spacing.md,
+    right: spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
+    opacity: 0.82,
+    shadowColor: '#4AC8EB',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.28,
+    shadowRadius: 24,
     zIndex: 1,
   },
   workflowGrid: {
@@ -1894,13 +3085,15 @@ const styles = StyleSheet.create({
     minWidth: 0,
     padding: spacing.xl,
     borderWidth: 1,
-    borderColor: '#DFE7F1',
+    borderColor: 'rgba(95, 190, 228, 0.22)',
     borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.96)',
+    backgroundColor: 'rgba(5, 20, 38, 0.88)',
+    experimental_backgroundImage:
+      'linear-gradient(145deg, rgba(8, 31, 55, 0.94) 0%, rgba(4, 17, 33, 0.94) 100%)',
     gap: spacing.lg,
-    shadowColor: '#102A4D',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.28,
     shadowRadius: 30,
   },
   mainPanelFull: {
@@ -1912,33 +3105,35 @@ const styles = StyleSheet.create({
     minWidth: 310,
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: '#DDE6F1',
+    borderColor: 'rgba(95, 190, 228, 0.2)',
     borderRadius: 24,
-    backgroundColor: 'rgba(250, 252, 255, 0.96)',
+    backgroundColor: 'rgba(5, 21, 40, 0.82)',
+    experimental_backgroundImage:
+      'linear-gradient(160deg, rgba(8, 34, 60, 0.9) 0%, rgba(4, 17, 32, 0.94) 100%)',
     gap: spacing.md,
-    shadowColor: '#102A4D',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.07,
+    shadowOpacity: 0.26,
     shadowRadius: 26,
   },
   sectionIntro: {
     gap: spacing.xs,
   },
   sectionKicker: {
-    color: '#2B6BAA',
+    color: '#65D3F1',
     fontSize: 11,
     fontWeight: typography.fontWeight.bold,
     letterSpacing: 0.7,
     textTransform: 'uppercase',
   },
   sectionTitle: {
-    color: '#091E39',
+    color: '#F4FAFF',
     fontSize: typography.fontSize.xl,
     fontWeight: typography.fontWeight.bold,
     letterSpacing: -0.3,
   },
   sectionText: {
-    color: '#52657A',
+    color: '#9CB2C7',
     fontSize: typography.fontSize.md,
     lineHeight: typography.lineHeight.md,
   },
@@ -1953,23 +3148,25 @@ const styles = StyleSheet.create({
     minWidth: 220,
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: '#DFE7F1',
+    borderColor: 'rgba(100, 174, 211, 0.24)',
     borderRadius: 20,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(4, 17, 33, 0.76)',
+    experimental_backgroundImage:
+      'linear-gradient(145deg, rgba(8, 32, 56, 0.88) 0%, rgba(4, 16, 31, 0.9) 100%)',
     gap: spacing.sm,
-    shadowColor: '#102A4D',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.04,
+    shadowOpacity: 0.2,
     shadowRadius: 18,
   },
   vehicleCardActive: {
-    borderColor: '#3E86BD',
-    backgroundColor: '#EFF8FC',
-    shadowColor: '#2A78AE',
-    shadowOpacity: 0.11,
+    borderColor: '#39BDE8',
+    backgroundColor: 'rgba(12, 73, 112, 0.55)',
+    shadowColor: '#29B9EA',
+    shadowOpacity: 0.24,
   },
   vehicleCardHovered: {
-    borderColor: '#9BC1DA',
+    borderColor: 'rgba(90, 205, 239, 0.62)',
     transform: [{ translateY: -2 }],
   },
   vehicleHeader: {
@@ -1980,17 +3177,17 @@ const styles = StyleSheet.create({
   },
   vehicleBrand: {
     flex: 1,
-    color: '#2B6BAA',
+    color: '#6FD4F0',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
   vehicleModel: {
-    color: '#091E39',
+    color: '#F7FBFF',
     fontSize: typography.fontSize.lg,
     fontWeight: typography.fontWeight.bold,
   },
   vehicleMeta: {
-    color: '#5A6D82',
+    color: '#8FA7BC',
     fontSize: typography.fontSize.sm,
     lineHeight: typography.lineHeight.sm,
   },
@@ -1999,12 +3196,12 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
     borderWidth: 1,
-    borderColor: '#CADAEA',
+    borderColor: 'rgba(97, 184, 220, 0.28)',
     borderRadius: 999,
-    backgroundColor: '#F5F8FC',
+    backgroundColor: 'rgba(10, 38, 65, 0.72)',
   },
   registrationText: {
-    color: '#193653',
+    color: '#BBD8E8',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
   },
@@ -2016,10 +3213,10 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: spacing.md,
     borderWidth: 1,
-    borderColor: '#CFDAE7',
+    borderColor: 'rgba(99, 181, 220, 0.3)',
     borderRadius: 14,
-    backgroundColor: '#FBFCFE',
-    color: '#091E39',
+    backgroundColor: 'rgba(2, 13, 27, 0.82)',
+    color: '#F4FAFF',
     fontSize: typography.fontSize.md,
   },
   problemInput: {
@@ -2028,8 +3225,15 @@ const styles = StyleSheet.create({
   answerInput: {
     minHeight: 96,
   },
+  answerInputFocused: {
+    borderColor: '#4FD2F2',
+    shadowColor: '#3BC8EE',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+  },
   inputError: {
-    borderColor: '#B42318',
+    borderColor: '#FF8F8A',
   },
   inputMetaRow: {
     flexDirection: 'row',
@@ -2038,25 +3242,37 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   fieldLabel: {
-    color: '#152F4D',
+    color: '#DCEAF5',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
   },
   fieldError: {
     flex: 1,
-    color: '#B42318',
+    color: '#FFAAA5',
     fontSize: typography.fontSize.xs,
     lineHeight: typography.lineHeight.xs,
   },
   fieldHint: {
     flex: 1,
-    color: '#6A7B8E',
+    color: '#7892AA',
     fontSize: typography.fontSize.xs,
   },
   characterCount: {
-    color: '#6A7B8E',
+    color: '#7892AA',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.semiBold,
+  },
+  freeAnswerField: {
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  freeAnswerLabel: {
+    color: '#B9D8E8',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+  freeAnswerCounter: {
+    alignSelf: 'flex-end',
   },
   photoSection: {
     gap: spacing.md,
@@ -2070,13 +3286,13 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     borderWidth: 1,
     borderStyle: 'dashed',
-    borderColor: '#83B8D4',
+    borderColor: 'rgba(77, 202, 237, 0.58)',
     borderRadius: 20,
-    backgroundColor: '#F2F9FC',
+    backgroundColor: 'rgba(5, 36, 61, 0.58)',
   },
   photoDropZoneHovered: {
-    borderColor: '#2D78AD',
-    backgroundColor: '#EAF6FB',
+    borderColor: '#5ED8F5',
+    backgroundColor: 'rgba(9, 65, 99, 0.64)',
     transform: [{ translateY: -1 }],
   },
   photoGlyph: {
@@ -2085,7 +3301,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 15,
-    backgroundColor: '#155C9B',
+    backgroundColor: '#0B6FA8',
+    shadowColor: '#4CD3F4',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
   },
   photoGlyphText: {
     color: '#FFFFFF',
@@ -2098,16 +3318,16 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   photoChooseText: {
-    color: '#0B3158',
+    color: '#F3FAFF',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
   photoOptionalText: {
-    color: '#4B657D',
+    color: '#9DB4C8',
     fontSize: typography.fontSize.sm,
   },
   photoFormatsText: {
-    color: '#718295',
+    color: '#7894AB',
     fontSize: typography.fontSize.xs,
   },
   photoPreviewCard: {
@@ -2116,15 +3336,15 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#B9D8E6',
+    borderColor: 'rgba(79, 196, 230, 0.4)',
     borderRadius: 20,
-    backgroundColor: '#F5FBFD',
+    backgroundColor: 'rgba(6, 36, 59, 0.7)',
   },
   photoPreview: {
     width: 112,
     height: 84,
     borderRadius: 14,
-    backgroundColor: '#DCEAF2',
+    backgroundColor: '#0A2138',
   },
   photoPreviewCopy: {
     flex: 1,
@@ -2132,12 +3352,12 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   photoFileName: {
-    color: '#0B2746',
+    color: '#F4FAFF',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
   photoFileSize: {
-    color: '#60758A',
+    color: '#91A9BE',
     fontSize: typography.fontSize.xs,
   },
   photoActions: {
@@ -2153,15 +3373,15 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.md,
     borderWidth: 1,
-    borderColor: '#2B78AD',
+    borderColor: '#38BDE8',
     borderRadius: 12,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(7, 36, 60, 0.88)',
   },
   photoActionHovered: {
-    backgroundColor: '#EAF6FB',
+    backgroundColor: 'rgba(13, 77, 111, 0.88)',
   },
   photoSecondaryActionText: {
-    color: '#175F94',
+    color: '#78D9F2',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
   },
@@ -2172,15 +3392,15 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.md,
     borderWidth: 1,
-    borderColor: '#D7A6A2',
+    borderColor: 'rgba(238, 126, 126, 0.48)',
     borderRadius: 12,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(48, 17, 27, 0.72)',
   },
   photoRemoveActionHovered: {
-    backgroundColor: '#FFF1F0',
+    backgroundColor: 'rgba(91, 29, 37, 0.76)',
   },
   photoRemoveActionText: {
-    color: '#A3342D',
+    color: '#FFAAA5',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
   },
@@ -2190,9 +3410,9 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#CBE4ED',
+    borderColor: 'rgba(77, 187, 219, 0.3)',
     borderRadius: 18,
-    backgroundColor: '#F0F9FC',
+    backgroundColor: 'rgba(7, 42, 66, 0.62)',
   },
   privacyIcon: {
     width: 38,
@@ -2200,7 +3420,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 13,
-    backgroundColor: '#155C9B',
+    backgroundColor: '#0A6EA6',
   },
   privacyIconText: {
     color: '#FFFFFF',
@@ -2212,12 +3432,12 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   privacyTitle: {
-    color: '#164E72',
+    color: '#DDF4FC',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
   privacyText: {
-    color: '#486D82',
+    color: '#91B1C5',
     fontSize: typography.fontSize.xs,
     lineHeight: typography.lineHeight.xs,
   },
@@ -2228,17 +3448,17 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: '#DCE6F0',
+    borderColor: 'rgba(91, 174, 211, 0.24)',
     borderRadius: 20,
-    backgroundColor: '#F9FBFD',
-    shadowColor: '#102A4D',
+    backgroundColor: 'rgba(5, 24, 43, 0.7)',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.04,
+    shadowOpacity: 0.18,
     shadowRadius: 18,
   },
   questionNumber: {
     alignSelf: 'flex-start',
-    color: '#2B6BAA',
+    color: '#66D4F1',
     fontSize: 10,
     fontWeight: typography.fontWeight.bold,
     letterSpacing: 0.9,
@@ -2257,32 +3477,32 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderWidth: 1,
-    borderColor: '#C8D7E6',
+    borderColor: 'rgba(105, 178, 211, 0.3)',
     borderRadius: 14,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(3, 16, 31, 0.8)',
   },
   choiceButtonSelected: {
-    borderColor: '#2E78B1',
-    backgroundColor: '#EAF6FB',
+    borderColor: '#3BC2EB',
+    backgroundColor: 'rgba(12, 87, 126, 0.66)',
   },
   choiceButtonHovered: {
-    borderColor: '#83B7D6',
+    borderColor: '#5FD4EF',
   },
   choiceButtonText: {
-    color: '#53677D',
+    color: '#A9BED0',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
   },
   choiceButtonTextSelected: {
-    color: '#155C9B',
+    color: '#E7FAFF',
   },
   answerCount: {
     alignSelf: 'flex-start',
     paddingVertical: 6,
     paddingHorizontal: 10,
     borderRadius: 999,
-    backgroundColor: '#EEF4F9',
-    color: '#567087',
+    backgroundColor: 'rgba(9, 48, 74, 0.72)',
+    color: '#8FCDE2',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.semiBold,
   },
@@ -2298,18 +3518,18 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     paddingHorizontal: 24,
     borderWidth: 1,
-    borderColor: '#1D70A9',
+    borderColor: '#45C7ED',
     borderRadius: 15,
-    backgroundColor: '#155C9B',
+    backgroundColor: '#0B74B2',
     experimental_backgroundImage:
-      'linear-gradient(135deg, #155C9B 0%, #1878AA 100%)',
-    shadowColor: '#155C9B',
+      'linear-gradient(135deg, #1688D3 0%, #0A5EA8 100%)',
+    shadowColor: '#35C9F1',
     shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.28,
     shadowRadius: 20,
   },
   primaryActionHovered: {
-    backgroundColor: '#0D4D87',
+    backgroundColor: '#087FBE',
     transform: [{ translateY: -1 }],
   },
   primaryActionText: {
@@ -2324,49 +3544,49 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     paddingHorizontal: 24,
     borderWidth: 1,
-    borderColor: '#C7D6E5',
+    borderColor: 'rgba(91, 181, 218, 0.36)',
     borderRadius: 15,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(5, 24, 43, 0.84)',
   },
   secondaryActionHovered: {
-    borderColor: '#9DBBD2',
-    backgroundColor: '#F3F8FC',
+    borderColor: '#55C8EB',
+    backgroundColor: 'rgba(10, 53, 82, 0.9)',
   },
   secondaryActionText: {
-    color: '#173957',
+    color: '#C9E4F2',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
   sidePanelTitle: {
-    color: '#0A213C',
+    color: '#F3FAFF',
     fontSize: typography.fontSize.lg,
     fontWeight: typography.fontWeight.bold,
   },
   sidePanelText: {
-    color: '#53677D',
+    color: '#9CB3C7',
     fontSize: typography.fontSize.sm,
     lineHeight: typography.lineHeight.sm,
   },
   progressBox: {
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#D5E4EF',
+    borderColor: 'rgba(83, 179, 217, 0.25)',
     borderRadius: 18,
-    backgroundColor: '#F1F7FB',
+    backgroundColor: 'rgba(6, 35, 58, 0.7)',
     gap: spacing.xs,
   },
   progressValue: {
-    color: '#155C9B',
+    color: '#65D6F2',
     fontSize: typography.fontSize.xl,
     fontWeight: typography.fontWeight.bold,
   },
   selectedVehicleText: {
-    color: '#102E4B',
+    color: '#F0F8FE',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
   previewLabel: {
-    color: '#667A8F',
+    color: '#75BFD9',
     fontSize: 10,
     fontWeight: typography.fontWeight.bold,
     letterSpacing: 0.7,
@@ -2375,20 +3595,44 @@ const styles = StyleSheet.create({
   disclaimerBox: {
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#C8E0EA',
+    borderColor: 'rgba(77, 188, 218, 0.28)',
     borderRadius: 18,
-    backgroundColor: '#EFF8FB',
+    backgroundColor: 'rgba(5, 42, 65, 0.64)',
     gap: spacing.xs,
   },
   disclaimerTitle: {
-    color: '#155C77',
+    color: '#C9F0FA',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
   disclaimerText: {
-    color: '#496F82',
+    color: '#8EADBF',
     fontSize: typography.fontSize.sm,
     lineHeight: typography.lineHeight.sm,
+  },
+  blueprintPanel: {
+    minHeight: 220,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(89, 169, 203, 0.3)',
+    borderRadius: 18,
+    backgroundColor: 'rgba(2, 15, 29, 0.74)',
+  },
+  blueprintGlow: {
+    position: 'absolute',
+    width: '72%',
+    height: 90,
+    bottom: -42,
+    borderRadius: 999,
+    backgroundColor: 'rgba(34, 157, 197, 0.18)',
+  },
+  blueprintImage: {
+    width: '100%',
+    height: 190,
+    opacity: 0.96,
   },
   resultHeroCard: {
     flexDirection: 'row',
@@ -2464,24 +3708,24 @@ const styles = StyleSheet.create({
   summaryCard: {
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: '#DCE6F0',
+    borderColor: 'rgba(91, 177, 214, 0.24)',
     borderRadius: 20,
-    backgroundColor: '#F9FBFD',
+    backgroundColor: 'rgba(5, 25, 45, 0.76)',
     gap: spacing.xs,
   },
   resultKicker: {
-    color: '#2A6C9F',
+    color: '#65D3F1',
     fontSize: 10,
     fontWeight: typography.fontWeight.bold,
     letterSpacing: 0.9,
   },
   summaryTitle: {
-    color: '#0B2039',
+    color: '#F2F9FE',
     fontSize: typography.fontSize.lg,
     fontWeight: typography.fontWeight.bold,
   },
   summaryText: {
-    color: '#41586F',
+    color: '#A5BACB',
     fontSize: typography.fontSize.md,
     lineHeight: typography.lineHeight.md,
   },
@@ -2490,13 +3734,13 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: '#A8D2E2',
+    borderColor: 'rgba(80, 202, 235, 0.34)',
     borderRadius: 22,
-    backgroundColor: '#F0F8FB',
+    backgroundColor: 'rgba(5, 38, 63, 0.74)',
     gap: spacing.md,
-    shadowColor: '#103957',
+    shadowColor: '#22BEE9',
     shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.07,
+    shadowOpacity: 0.12,
     shadowRadius: 22,
   },
   visualAnalysisHeader: {
@@ -2512,7 +3756,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   visualAnalysisTitle: {
-    color: '#0A2947',
+    color: '#F2FAFF',
     fontSize: typography.fontSize.lg,
     fontWeight: typography.fontWeight.bold,
   },
@@ -2523,9 +3767,9 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 11,
     borderWidth: 1,
-    borderColor: '#91C6D9',
+    borderColor: 'rgba(87, 206, 236, 0.46)',
     borderRadius: 999,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(7, 48, 76, 0.82)',
   },
   photoAnalyzedDot: {
     width: 7,
@@ -2534,7 +3778,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#257CAB',
   },
   photoAnalyzedBadgeText: {
-    color: '#155C87',
+    color: '#BEEFFD',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
   },
@@ -2548,9 +3792,9 @@ const styles = StyleSheet.create({
     width: 168,
     height: 126,
     borderWidth: 1,
-    borderColor: '#C0D9E5',
+    borderColor: 'rgba(95, 198, 228, 0.4)',
     borderRadius: 17,
-    backgroundColor: '#DCEAF2',
+    backgroundColor: '#081D31',
   },
   visualAnalysisCopy: {
     flexGrow: 1,
@@ -2564,17 +3808,17 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 10,
     borderWidth: 1,
-    borderColor: '#9DCDB9',
+    borderColor: 'rgba(90, 205, 157, 0.52)',
     borderRadius: 999,
-    backgroundColor: '#EAF8F1',
+    backgroundColor: 'rgba(21, 91, 66, 0.46)',
   },
   usefulImageBadgeText: {
-    color: '#287457',
+    color: '#8DE1BB',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
   },
   visualAnalysisObservations: {
-    color: '#36556E',
+    color: '#A8BECE',
     fontSize: typography.fontSize.md,
     lineHeight: typography.lineHeight.md,
   },
@@ -2592,22 +3836,22 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     paddingTop: spacing.lg,
     borderWidth: 1,
-    borderColor: '#D9E4EE',
+    borderColor: 'rgba(97, 172, 207, 0.24)',
     borderRadius: 18,
-    backgroundColor: '#F5F8FB',
+    backgroundColor: 'rgba(5, 25, 44, 0.78)',
     gap: spacing.xs,
   },
   resultMetricCalm: {
-    borderColor: '#B9DCCE',
-    backgroundColor: '#F1FAF6',
+    borderColor: 'rgba(80, 192, 145, 0.42)',
+    backgroundColor: 'rgba(15, 70, 53, 0.42)',
   },
   resultMetricWarning: {
-    borderColor: '#E8D19D',
-    backgroundColor: '#FFF9EC',
+    borderColor: 'rgba(226, 176, 74, 0.48)',
+    backgroundColor: 'rgba(91, 61, 12, 0.42)',
   },
   resultMetricDanger: {
-    borderColor: '#E5BBB7',
-    backgroundColor: '#FFF5F4',
+    borderColor: 'rgba(235, 107, 103, 0.5)',
+    backgroundColor: 'rgba(91, 28, 35, 0.46)',
   },
   metricAccent: {
     position: 'absolute',
@@ -2627,23 +3871,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#C9574D',
   },
   resultMetricLabel: {
-    color: '#60758A',
+    color: '#94AFC2',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
   },
   resultMetricValue: {
-    color: '#244766',
+    color: '#EAF6FC',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
   resultMetricValueCalm: {
-    color: '#27765A',
+    color: '#82DCB1',
   },
   resultMetricValueWarning: {
-    color: '#946111',
+    color: '#F2CD7E',
   },
   resultMetricValueDanger: {
-    color: '#A83B34',
+    color: '#FFAAA5',
   },
   safetyBox: {
     flexDirection: 'row',
@@ -2651,13 +3895,13 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#E4CD98',
+    borderColor: 'rgba(230, 180, 81, 0.5)',
     borderRadius: 18,
-    backgroundColor: '#FFF9EC',
+    backgroundColor: 'rgba(91, 60, 10, 0.46)',
   },
   safetyBoxCritical: {
-    borderColor: '#E1B3AE',
-    backgroundColor: '#FFF4F3',
+    borderColor: 'rgba(239, 105, 101, 0.58)',
+    backgroundColor: 'rgba(98, 27, 34, 0.5)',
   },
   safetyIcon: {
     width: 36,
@@ -2665,46 +3909,46 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 12,
-    backgroundColor: '#F5DFAD',
+    backgroundColor: 'rgba(194, 133, 28, 0.42)',
   },
   safetyIconCritical: {
-    backgroundColor: '#F5D2CE',
+    backgroundColor: 'rgba(187, 58, 61, 0.46)',
   },
   safetyIconText: {
-    color: '#805407',
+    color: '#FFE0A0',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
   safetyIconTextCritical: {
-    color: '#A83B34',
+    color: '#FFD0CC',
   },
   safetyCopy: {
     flex: 1,
     gap: spacing.xs,
   },
   safetyTitle: {
-    color: '#805407',
+    color: '#F7D58E',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
   safetyTitleCritical: {
-    color: '#A83B34',
+    color: '#FFB2AD',
   },
   safetyText: {
-    color: '#704A00',
+    color: '#EBCB8D',
     fontSize: typography.fontSize.md,
     lineHeight: typography.lineHeight.md,
   },
   safetyTextCritical: {
-    color: '#87352F',
+    color: '#FFC0BC',
     fontWeight: typography.fontWeight.semiBold,
   },
   recommendationBox: {
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: '#BDD8E6',
+    borderColor: 'rgba(82, 191, 225, 0.3)',
     borderRadius: 22,
-    backgroundColor: '#F1F8FC',
+    backgroundColor: 'rgba(5, 34, 56, 0.76)',
     gap: spacing.md,
   },
   recommendationHeader: {
@@ -2715,7 +3959,7 @@ const styles = StyleSheet.create({
   },
   recommendationTitle: {
     marginTop: 2,
-    color: '#0B2945',
+    color: '#F3FAFF',
     fontSize: typography.fontSize.lg,
     fontWeight: typography.fontWeight.bold,
   },
@@ -2725,7 +3969,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 13,
-    backgroundColor: '#0C3156',
+    backgroundColor: '#0B6C9F',
   },
   recommendationMarkText: {
     color: '#FFFFFF',
@@ -2737,20 +3981,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: spacing.md,
     borderRadius: 16,
-    backgroundColor: 'rgba(55, 117, 158, 0.08)',
+    backgroundColor: 'rgba(60, 142, 182, 0.12)',
     gap: spacing.sm,
   },
   catalogSkeletonLineWide: {
     width: '68%',
     height: 10,
     borderRadius: 999,
-    backgroundColor: 'rgba(69, 122, 155, 0.16)',
+    backgroundColor: 'rgba(91, 184, 220, 0.2)',
   },
   catalogSkeletonLineShort: {
     width: '38%',
     height: 10,
     borderRadius: 999,
-    backgroundColor: 'rgba(69, 122, 155, 0.12)',
+    backgroundColor: 'rgba(91, 184, 220, 0.14)',
   },
   serviceRecommendationCard: {
     flexDirection: 'row',
@@ -2758,9 +4002,9 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#C5DDE9',
+    borderColor: 'rgba(98, 184, 218, 0.28)',
     borderRadius: 18,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(3, 19, 35, 0.72)',
   },
   recommendationIcon: {
     width: 42,
@@ -2768,10 +4012,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 14,
-    backgroundColor: '#E6F4F9',
+    backgroundColor: 'rgba(17, 90, 128, 0.56)',
   },
   recommendationIconText: {
-    color: '#155C9B',
+    color: '#83DDF3',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
@@ -2780,17 +4024,17 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   recommendationCardLabel: {
-    color: '#658095',
+    color: '#83A9BE',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.semiBold,
   },
   recommendationCardName: {
-    color: '#0B2945',
+    color: '#F3FAFF',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
   workshopsTitle: {
-    color: '#34536D',
+    color: '#B8CEDC',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
@@ -2808,9 +4052,9 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#D3E1EA',
+    borderColor: 'rgba(91, 176, 211, 0.26)',
     borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.78)',
+    backgroundColor: 'rgba(3, 18, 34, 0.68)',
   },
   workshopIndex: {
     width: 30,
@@ -2818,16 +4062,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 10,
-    backgroundColor: '#DCEEF5',
+    backgroundColor: 'rgba(13, 91, 130, 0.58)',
   },
   workshopIndexText: {
-    color: '#155C9B',
+    color: '#79D8F0',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
   },
   workshopName: {
     flex: 1,
-    color: '#1C3E5B',
+    color: '#DDECF5',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
   },
@@ -2837,19 +4081,19 @@ const styles = StyleSheet.create({
     minWidth: 190,
     height: 64,
     borderRadius: 16,
-    backgroundColor: 'rgba(69, 122, 155, 0.1)',
+    backgroundColor: 'rgba(83, 164, 201, 0.14)',
   },
   catalogUnavailableText: {
-    color: '#667A8F',
+    color: '#829CAF',
     fontSize: typography.fontSize.sm,
     fontStyle: 'italic',
   },
   savBox: {
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: '#D4DFEB',
+    borderColor: 'rgba(91, 176, 211, 0.25)',
     borderRadius: 20,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: 'rgba(5, 24, 43, 0.74)',
     gap: spacing.md,
   },
   savHeader: {
@@ -2863,7 +4107,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 14,
-    backgroundColor: '#102D4C',
+    backgroundColor: '#0A5887',
   },
   savIconText: {
     color: '#FFFFFF',
@@ -2876,48 +4120,48 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   savTitle: {
-    color: '#102E4B',
+    color: '#F0F8FD',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
   savText: {
-    color: '#53677D',
+    color: '#9EB4C7',
     fontSize: typography.fontSize.sm,
     lineHeight: typography.lineHeight.sm,
   },
   professionalNotice: {
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#CBE2EA',
+    borderColor: 'rgba(72, 190, 219, 0.28)',
     borderRadius: 18,
-    backgroundColor: '#F0F9FB',
+    backgroundColor: 'rgba(5, 43, 65, 0.62)',
     gap: spacing.xs,
   },
   professionalNoticeTitle: {
-    color: '#155C77',
+    color: '#CAF0FA',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
   professionalNoticeText: {
-    color: '#4B7082',
+    color: '#92B1C3',
     fontSize: typography.fontSize.sm,
     lineHeight: typography.lineHeight.sm,
   },
   photoSuggestionBox: {
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#D4E2EC',
+    borderColor: 'rgba(91, 177, 213, 0.26)',
     borderRadius: 18,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(4, 22, 40, 0.72)',
     gap: spacing.xs,
   },
   photoSuggestionTitle: {
-    color: '#315E8F',
+    color: '#9EDCF0',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
   photoSuggestionText: {
-    color: '#53677D',
+    color: '#9DB4C7',
     fontSize: typography.fontSize.sm,
     lineHeight: typography.lineHeight.sm,
   },
@@ -2925,9 +4169,9 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     padding: spacing.xl,
     borderWidth: 1,
-    borderColor: '#C9DDE9',
+    borderColor: 'rgba(91, 183, 220, 0.28)',
     borderRadius: 22,
-    backgroundColor: '#F4F9FC',
+    backgroundColor: 'rgba(5, 26, 46, 0.84)',
     gap: spacing.lg,
   },
   outOfScopeOrb: {
@@ -2945,25 +4189,25 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 10,
     borderWidth: 1,
-    borderColor: '#C6D9E5',
+    borderColor: 'rgba(101, 180, 213, 0.3)',
     borderRadius: 999,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(4, 22, 40, 0.76)',
   },
   resultStatusBadgeMutedText: {
-    color: '#4F7088',
+    color: '#92BED1',
     fontSize: 10,
     fontWeight: typography.fontWeight.bold,
     letterSpacing: 0.7,
   },
   outOfScopeTitle: {
-    color: '#0B2945',
+    color: '#F2F9FE',
     fontSize: typography.fontSize.xl,
     fontWeight: typography.fontWeight.bold,
     textAlign: 'center',
   },
   outOfScopeText: {
     maxWidth: 720,
-    color: '#53677D',
+    color: '#9EB4C7',
     fontSize: typography.fontSize.md,
     lineHeight: typography.lineHeight.md,
     textAlign: 'center',
@@ -2974,9 +4218,9 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#E4BAB7',
+    borderColor: 'rgba(239, 111, 107, 0.52)',
     borderRadius: 18,
-    backgroundColor: '#FFF5F4',
+    backgroundColor: 'rgba(91, 25, 33, 0.56)',
   },
   errorIcon: {
     width: 36,
@@ -2984,10 +4228,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 12,
-    backgroundColor: '#F5D5D2',
+    backgroundColor: 'rgba(187, 54, 59, 0.48)',
   },
   errorIconText: {
-    color: '#A83B34',
+    color: '#FFD0CD',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
@@ -2996,32 +4240,537 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   submitErrorTitle: {
-    color: '#A83B34',
+    color: '#FFB1AC',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
   submitErrorText: {
-    color: '#873C36',
+    color: '#F1B7B3',
     fontSize: typography.fontSize.sm,
     lineHeight: typography.lineHeight.sm,
   },
   emptyPanel: {
     padding: spacing.xl,
     borderWidth: 1,
-    borderColor: '#D7E2ED',
+    borderColor: 'rgba(91, 177, 213, 0.24)',
     borderRadius: 20,
-    backgroundColor: '#F9FBFD',
+    backgroundColor: 'rgba(5, 24, 43, 0.72)',
     gap: spacing.sm,
   },
   emptyTitle: {
-    color: '#0B2945',
+    color: '#F2F9FE',
     fontSize: typography.fontSize.lg,
     fontWeight: typography.fontWeight.bold,
   },
   emptyText: {
-    color: '#53677D',
+    color: '#9EB4C7',
     fontSize: typography.fontSize.md,
     lineHeight: typography.lineHeight.md,
+  },
+  bookingShell: {
+    padding: spacing.xl,
+    borderWidth: 1,
+    borderColor: 'rgba(54, 192, 233, 0.34)',
+    borderRadius: 24,
+    backgroundColor: 'rgba(3, 22, 40, 0.9)',
+    gap: spacing.lg,
+    shadowColor: '#21BFEF',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 28,
+    elevation: 4,
+  },
+  bookingShellNarrow: {
+    padding: spacing.md,
+    borderRadius: 20,
+  },
+  bookingSuccessShell: {
+    alignItems: 'stretch',
+    borderColor: 'rgba(79, 222, 182, 0.48)',
+    backgroundColor: 'rgba(3, 38, 48, 0.92)',
+  },
+  bookingSuccessBadge: {
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+    paddingHorizontal: 11,
+    borderWidth: 1,
+    borderColor: 'rgba(88, 235, 190, 0.5)',
+    borderRadius: 999,
+    backgroundColor: 'rgba(20, 121, 100, 0.3)',
+  },
+  bookingSuccessBadgeText: {
+    color: '#9AF2D2',
+    fontSize: 10,
+    fontWeight: typography.fontWeight.bold,
+    letterSpacing: 0.8,
+  },
+  bookingHeader: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  bookingHeaderCopy: {
+    flex: 1,
+    minWidth: 240,
+    gap: spacing.xs,
+  },
+  bookingHeaderCopyNarrow: {
+    width: '100%',
+    minWidth: 0,
+  },
+  bookingKicker: {
+    color: '#4CCFF2',
+    fontSize: 11,
+    fontWeight: typography.fontWeight.bold,
+    letterSpacing: 0.9,
+  },
+  bookingTitle: {
+    color: '#F4FAFE',
+    fontSize: typography.fontSize.xl,
+    fontWeight: typography.fontWeight.bold,
+    lineHeight: typography.lineHeight.xl,
+  },
+  bookingLead: {
+    color: '#A5BACB',
+    fontSize: typography.fontSize.md,
+    lineHeight: typography.lineHeight.md,
+  },
+  bookingPendingBadge: {
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(85, 197, 228, 0.34)',
+    borderRadius: 999,
+    backgroundColor: 'rgba(7, 70, 101, 0.5)',
+  },
+  bookingPendingBadgeText: {
+    color: '#B8E8F5',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+  bookingProgress: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(82, 169, 207, 0.2)',
+    borderRadius: 18,
+    backgroundColor: 'rgba(2, 16, 31, 0.7)',
+  },
+  bookingProgressItem: {
+    flex: 1,
+    minWidth: 120,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    borderRadius: 13,
+    backgroundColor: 'rgba(9, 34, 55, 0.46)',
+  },
+  bookingProgressItemNarrow: {
+    minWidth: 0,
+    flexBasis: '46%',
+  },
+  bookingProgressItemActive: {
+    borderColor: 'rgba(51, 197, 239, 0.7)',
+    backgroundColor: 'rgba(5, 78, 116, 0.48)',
+  },
+  bookingProgressItemComplete: {
+    borderColor: 'rgba(61, 165, 201, 0.25)',
+    backgroundColor: 'rgba(7, 47, 70, 0.56)',
+  },
+  bookingProgressIndex: {
+    width: 25,
+    height: 25,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 999,
+    backgroundColor: '#17334D',
+  },
+  bookingProgressIndexHighlighted: {
+    backgroundColor: '#168FC9',
+  },
+  bookingProgressIndexText: {
+    color: '#86A0B5',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+  },
+  bookingProgressIndexTextHighlighted: {
+    color: '#FFFFFF',
+  },
+  bookingProgressLabel: {
+    color: '#7891A7',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+  bookingProgressLabelHighlighted: {
+    color: '#DDF7FE',
+  },
+  bookingSection: {
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(62, 166, 207, 0.24)',
+    borderRadius: 20,
+    backgroundColor: 'rgba(4, 28, 49, 0.72)',
+    gap: spacing.md,
+  },
+  bookingSectionNarrow: {
+    padding: spacing.md,
+    borderRadius: 17,
+  },
+  bookingConfirmationSection: {
+    borderColor: 'rgba(58, 205, 238, 0.48)',
+    backgroundColor: 'rgba(4, 37, 62, 0.82)',
+  },
+  bookingSectionKicker: {
+    color: '#49C8EA',
+    fontSize: 10,
+    fontWeight: typography.fontWeight.bold,
+    letterSpacing: 0.8,
+  },
+  bookingSectionTitle: {
+    color: '#EDF8FD',
+    fontSize: typography.fontSize.lg,
+    fontWeight: typography.fontWeight.bold,
+  },
+  bookingSectionText: {
+    color: '#96AEC1',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+  bookingWorkshopGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  bookingWorkshopCard: {
+    flex: 1,
+    minWidth: 220,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(70, 151, 188, 0.35)',
+    borderRadius: 17,
+    backgroundColor: 'rgba(4, 24, 43, 0.78)',
+  },
+  bookingCardNarrow: {
+    width: '100%',
+    minWidth: 0,
+    flexBasis: '100%',
+  },
+  bookingWorkshopCardSelected: {
+    borderColor: '#35C9F1',
+    backgroundColor: 'rgba(7, 81, 118, 0.62)',
+  },
+  bookingWorkshopCardHovered: {
+    borderColor: 'rgba(62, 203, 240, 0.68)',
+    backgroundColor: 'rgba(7, 58, 87, 0.68)',
+  },
+  bookingSelectionDot: {
+    width: 18,
+    height: 18,
+    borderWidth: 2,
+    borderColor: '#52768E',
+    borderRadius: 999,
+    backgroundColor: 'transparent',
+  },
+  bookingSelectionDotSelected: {
+    borderWidth: 5,
+    borderColor: '#8BE8FC',
+    backgroundColor: '#087FB6',
+  },
+  bookingWorkshopCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  bookingSmallLabel: {
+    color: '#72BCD5',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semiBold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  bookingWorkshopName: {
+    color: '#F0F9FD',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+  bookingEmptyText: {
+    color: '#A8BAC8',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+  bookingModeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  bookingPeriodRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  bookingChoiceButton: {
+    minWidth: 140,
+    paddingVertical: 11,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(75, 157, 194, 0.38)',
+    borderRadius: 14,
+    backgroundColor: 'rgba(3, 23, 41, 0.78)',
+  },
+  bookingChoiceButtonSelected: {
+    borderColor: '#36C7EF',
+    backgroundColor: 'rgba(8, 100, 142, 0.6)',
+  },
+  bookingChoiceButtonHovered: {
+    borderColor: 'rgba(65, 201, 237, 0.72)',
+  },
+  bookingChoiceButtonText: {
+    color: '#9CB2C4',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+    textAlign: 'center',
+  },
+  bookingChoiceButtonTextSelected: {
+    color: '#E7FAFF',
+  },
+  bookingDateField: {
+    maxWidth: 340,
+    gap: spacing.xs,
+  },
+  bookingFieldLabel: {
+    color: '#CAEAF4',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+  bookingInput: {
+    minHeight: 48,
+    paddingVertical: 11,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(66, 173, 211, 0.42)',
+    borderRadius: 14,
+    backgroundColor: 'rgba(2, 17, 31, 0.82)',
+    color: '#EFFAFF',
+    fontSize: typography.fontSize.md,
+  },
+  bookingInputError: {
+    borderColor: '#EF7772',
+  },
+  bookingFieldHint: {
+    color: '#7896AA',
+    fontSize: typography.fontSize.xs,
+  },
+  bookingPrimaryAction: {
+    minHeight: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 13,
+    paddingHorizontal: spacing.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(91, 219, 249, 0.62)',
+    borderRadius: 15,
+    backgroundColor: '#087FBD',
+    shadowColor: '#2CC8F0',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.16,
+    shadowRadius: 18,
+    elevation: 3,
+  },
+  bookingPrimaryActionHovered: {
+    backgroundColor: '#0A94D5',
+    borderColor: '#9AEAFF',
+  },
+  bookingPrimaryActionText: {
+    color: '#FFFFFF',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+    textAlign: 'center',
+  },
+  bookingSecondaryAction: {
+    minHeight: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: spacing.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(76, 169, 205, 0.38)',
+    borderRadius: 14,
+    backgroundColor: 'rgba(3, 25, 44, 0.74)',
+  },
+  bookingSecondaryActionHovered: {
+    borderColor: 'rgba(72, 204, 239, 0.72)',
+    backgroundColor: 'rgba(6, 53, 78, 0.76)',
+  },
+  bookingSecondaryActionText: {
+    color: '#B8D9E7',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+  bookingAlternativeNotice: {
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 181, 80, 0.38)',
+    borderRadius: 14,
+    backgroundColor: 'rgba(102, 67, 14, 0.28)',
+  },
+  bookingAlternativeText: {
+    color: '#F4D89B',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+  bookingOptionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+  },
+  bookingOptionCard: {
+    flex: 1,
+    minWidth: 260,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(66, 157, 196, 0.35)',
+    borderRadius: 18,
+    backgroundColor: 'rgba(2, 20, 36, 0.84)',
+    gap: spacing.sm,
+  },
+  bookingOptionCardSelected: {
+    borderColor: '#43D1F3',
+    backgroundColor: 'rgba(6, 69, 101, 0.72)',
+  },
+  bookingOptionCardHovered: {
+    borderColor: 'rgba(87, 213, 244, 0.76)',
+    backgroundColor: 'rgba(5, 48, 73, 0.78)',
+  },
+  bookingOptionHeader: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  bookingOptionDate: {
+    flex: 1,
+    color: '#DDF5FC',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+    textTransform: 'capitalize',
+  },
+  bookingAvailableBadge: {
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderWidth: 1,
+    borderColor: 'rgba(79, 230, 180, 0.42)',
+    borderRadius: 999,
+    backgroundColor: 'rgba(18, 122, 91, 0.28)',
+  },
+  bookingAvailableBadgeText: {
+    color: '#8BE9C7',
+    fontSize: 10,
+    fontWeight: typography.fontWeight.bold,
+  },
+  bookingExpiredBadge: {
+    borderColor: 'rgba(235, 123, 116, 0.42)',
+    backgroundColor: 'rgba(121, 43, 45, 0.32)',
+  },
+  bookingExpiredBadgeText: {
+    color: '#F5A7A2',
+  },
+  bookingOptionTime: {
+    color: '#5ADAF8',
+    fontSize: 28,
+    fontWeight: typography.fontWeight.bold,
+  },
+  bookingOptionService: {
+    color: '#EAF8FD',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+  bookingDetailLine: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(91, 157, 184, 0.14)',
+  },
+  bookingDetailLabel: {
+    color: '#7894A8',
+    fontSize: typography.fontSize.xs,
+  },
+  bookingDetailValue: {
+    flex: 1,
+    color: '#C7DDE8',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semiBold,
+    textAlign: 'right',
+  },
+  bookingExpiredText: {
+    color: '#F1A5A0',
+    fontSize: typography.fontSize.xs,
+    lineHeight: typography.lineHeight.xs,
+  },
+  bookingSummaryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  bookingSummaryItem: {
+    flex: 1,
+    minWidth: 190,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(76, 166, 201, 0.24)',
+    borderRadius: 14,
+    backgroundColor: 'rgba(2, 19, 34, 0.58)',
+    gap: 4,
+  },
+  bookingSummaryLabel: {
+    color: '#7898AD',
+    fontSize: typography.fontSize.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  bookingSummaryValue: {
+    color: '#EDF9FD',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+  bookingProblemSummary: {
+    padding: spacing.md,
+    borderLeftWidth: 3,
+    borderLeftColor: '#31BEE9',
+    borderRadius: 12,
+    backgroundColor: 'rgba(3, 24, 42, 0.65)',
+    gap: spacing.xs,
+  },
+  bookingProblemSummaryText: {
+    color: '#C4D8E3',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+  bookingFutureStatus: {
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(75, 196, 224, 0.28)',
+    borderRadius: 14,
+    backgroundColor: 'rgba(6, 64, 88, 0.38)',
+  },
+  bookingFutureStatusText: {
+    color: '#B9E8F3',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+    textAlign: 'center',
   },
   pressed: {
     opacity: 0.86,

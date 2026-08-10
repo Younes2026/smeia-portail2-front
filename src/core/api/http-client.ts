@@ -10,6 +10,12 @@ type DestinationOptions = {
   destination?: HttpDestination;
 };
 
+type PostOptions = DestinationOptions & {
+  headers?: {
+    'Idempotency-Key': string;
+  };
+};
+
 type RequestOptions = DestinationOptions & {
   method?: HttpMethod;
   body?: unknown;
@@ -218,7 +224,7 @@ export const httpClient = {
   post: <T>(
     endpoint: string,
     body: unknown,
-    options: DestinationOptions = {}
+    options: PostOptions = {}
   ) =>
     request<T>(endpoint, {
       ...options,
