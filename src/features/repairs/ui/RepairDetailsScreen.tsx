@@ -1,3 +1,4 @@
+import * as Linking from 'expo-linking';
 import { Link, useLocalSearchParams } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import type { ComponentProps, ReactNode } from 'react';
@@ -124,6 +125,7 @@ export function RepairDetailsScreen() {
             <InterventionPanel repair={repair} />
 
             <CarePanel isNarrow={isNarrow} repair={repair} />
+            <ShowroomPanel repair={repair} />
             <WorkshopContactPanel isNarrow={isNarrow} repair={repair} />
           </>
         ) : (
@@ -255,6 +257,71 @@ function CareItem({
         <Text style={styles.careValue}>{value}</Text>
       </View>
     </View>
+  );
+}
+
+function getShowroomPhoneUrl(phone: string | null): string | null {
+  if (!phone) {
+    return null;
+  }
+
+  const normalizedPhone = phone.replace(/[^\d+]/g, '');
+
+  return /\d/.test(normalizedPhone) ? `tel:${normalizedPhone}` : null;
+}
+
+function ShowroomPanel({ repair }: RepairPanelProps) {
+  return (
+    <View style={[styles.panel, styles.lowerPanel]}>
+      <View style={[styles.sectionCopy, styles.lowerSectionCopy]}>
+        <Text style={styles.sectionKicker}>Showroom SMEIA</Text>
+        <Text style={styles.sectionTitle}>Lieu de prise en charge</Text>
+        <Text style={styles.sectionDescription}>
+          Les coordonnées du showroom rattaché à l’atelier de votre dossier.
+        </Text>
+      </View>
+
+      <View style={styles.detailGrid}>
+        <InfoLine label="Showroom" value={repair.showroomLabel} />
+        <InfoLine
+          label="Adresse"
+          value={repair.showroomAddressLabel ?? 'Non renseignée'}
+        />
+        <InfoLine
+          label="Ville"
+          value={repair.showroomCityLabel ?? 'Non renseignée'}
+        />
+        <ShowroomPhoneLine phone={repair.showroomPhoneLabel} />
+      </View>
+    </View>
+  );
+}
+
+function ShowroomPhoneLine({ phone }: { phone: string | null }) {
+  const phoneUrl = getShowroomPhoneUrl(phone);
+
+  if (!phone || !phoneUrl) {
+    return <InfoLine label="Téléphone" value="Non renseigné" />;
+  }
+
+  return (
+    <Pressable
+      accessibilityHint="Ouvre l’application téléphone"
+      accessibilityLabel={`Appeler le showroom au ${phone}`}
+      accessibilityRole="link"
+      onPress={() => {
+        void Linking.openURL(phoneUrl);
+      }}
+      style={({ hovered, pressed }) => [
+        styles.detailLine,
+        styles.phoneLine,
+        hovered && styles.phoneLineHovered,
+        pressed && styles.pressed,
+      ]}
+    >
+      <Text style={styles.detailLabel}>Téléphone</Text>
+      <Text style={[styles.detailValue, styles.phoneValue]}>{phone}</Text>
+    </Pressable>
   );
 }
 
@@ -791,6 +858,21 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
     textAlign: 'right',
+  },
+
+  phoneLine: {
+    marginHorizontal: -spacing.sm,
+    paddingHorizontal: spacing.sm,
+    borderRadius: 12,
+  },
+
+  phoneLineHovered: {
+    backgroundColor: '#F4F8FD',
+  },
+
+  phoneValue: {
+    color: '#0F4C9A',
+    textDecorationLine: 'underline',
   },
 
   interventionGrid: {

@@ -57,6 +57,7 @@ import {
   isBookingOptionExpired,
   isValidBookingDate,
 } from '@/features/ai-diagnostic/model/ai-booking.presenter';
+import { BookingDateCalendar } from '@/features/ai-diagnostic/ui/BookingDateCalendar';
 import {
   AiJourneyProgress,
   IntelligenceOrb,
@@ -1773,7 +1774,7 @@ function AiBookingPanel({
     setDateMode(nextMode);
   };
 
-  const handlePreferredDateChange = (value: string) => {
+  const handlePreferredDateSelection = (value: string) => {
     if (isBookingPending) {
       return;
     }
@@ -1812,9 +1813,7 @@ function AiBookingPanel({
       requestedDate !== null &&
       !isValidBookingDate(requestedDate, getCasablancaTodayIso())
     ) {
-      setPreferenceError(
-        'Choisissez une date valide, au format AAAA-MM-JJ, qui ne soit pas passée.'
-      );
+      setPreferenceError('Sélectionnez une date valide dans le calendrier.');
       return;
     }
 
@@ -2219,26 +2218,13 @@ function AiBookingPanel({
           </View>
 
           {dateMode === 'date' ? (
-            <View style={styles.bookingDateField}>
-              <Text style={styles.bookingFieldLabel}>Date souhaitée</Text>
-              <TextInput
-                accessibilityLabel="Date souhaitée au format année mois jour"
-                autoCapitalize="none"
-                editable={!isBookingPending}
-                maxLength={10}
-                onChangeText={handlePreferredDateChange}
-                placeholder="AAAA-MM-JJ"
-                placeholderTextColor="#6F8AA1"
-                style={[
-                  styles.bookingInput,
-                  preferenceError && styles.bookingInputError,
-                ]}
-                value={preferredDate}
-              />
-              <Text style={styles.bookingFieldHint}>
-                À partir du {getCasablancaTodayIso()} inclus
-              </Text>
-            </View>
+            <BookingDateCalendar
+              compact={isNarrow}
+              disabled={isBookingPending}
+              minimumDate={getCasablancaTodayIso()}
+              onSelect={handlePreferredDateSelection}
+              selectedDate={preferredDate || null}
+            />
           ) : null}
 
           <Text style={styles.bookingFieldLabel}>Période</Text>
@@ -4543,32 +4529,10 @@ const styles = StyleSheet.create({
   bookingChoiceButtonTextSelected: {
     color: '#E7FAFF',
   },
-  bookingDateField: {
-    maxWidth: 340,
-    gap: spacing.xs,
-  },
   bookingFieldLabel: {
     color: '#CAEAF4',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.semiBold,
-  },
-  bookingInput: {
-    minHeight: 48,
-    paddingVertical: 11,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: 'rgba(66, 173, 211, 0.42)',
-    borderRadius: 14,
-    backgroundColor: 'rgba(2, 17, 31, 0.82)',
-    color: '#EFFAFF',
-    fontSize: typography.fontSize.md,
-  },
-  bookingInputError: {
-    borderColor: '#EF7772',
-  },
-  bookingFieldHint: {
-    color: '#7896AA',
-    fontSize: typography.fontSize.xs,
   },
   bookingPrimaryAction: {
     minHeight: 50,

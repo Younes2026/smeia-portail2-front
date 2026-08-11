@@ -4,6 +4,7 @@ import type {
   DirectusRelation,
   DirectusRepair,
   DirectusServiceType,
+  DirectusShowroom,
   DirectusStatus,
   DirectusVehicle,
   DirectusWorkshop,
@@ -178,6 +179,36 @@ function getBrandFromRepair(
   return vehicle?.brand_id ?? brand;
 }
 
+function getShowroomFromRepair(
+  repair: DirectusRepair
+): DirectusRelation<DirectusShowroom> {
+  const workshop = repair.workshop_id ?? null;
+
+  if (!isObjectRelation(workshop)) {
+    return null;
+  }
+
+  return workshop.showroom_id ?? null;
+}
+
+function getShowroomName(
+  showroom: DirectusRelation<DirectusShowroom>
+): string | null {
+  if (typeof showroom === 'number') {
+    return `Showroom #${showroom}`;
+  }
+
+  if (!isObjectRelation(showroom)) {
+    return null;
+  }
+
+  return showroom.name?.trim() || `Showroom #${showroom.id}`;
+}
+
+function getOptionalText(value?: string | null): string | null {
+  return value?.trim() || null;
+}
+
 function formatMileage(value?: number | null): string {
   if (value === null || value === undefined) {
     return 'Kilométrage non renseigné';
@@ -241,6 +272,7 @@ function hasCustomerInformation(
 
 export function mapRepairToListItem(repair: DirectusRepair): RepairListItem {
   const customer = getCustomerFromRepair(repair);
+  const showroom = getShowroomFromRepair(repair);
 
   return {
     id: repair.id,
@@ -250,6 +282,7 @@ export function mapRepairToListItem(repair: DirectusRepair): RepairListItem {
     statusId: getFlexibleRelationId(repair.status_id),
     serviceTypeId: getFlexibleRelationId(repair.service_type_id),
     workshopId: getFlexibleRelationId(repair.workshop_id),
+    showroomId: getRelationId(showroom),
     realExitDate: repair.real_exit_date ?? null,
     entryDate: formatDate(repair.entry_date),
     entryDateValue: repair.entry_date ?? null,
@@ -292,6 +325,17 @@ export function mapRepairToListItem(repair: DirectusRepair): RepairListItem {
       'Atelier',
       'Atelier non renseigné'
     ),
+
+    showroomName: getShowroomName(showroom),
+    showroomAddress: isObjectRelation(showroom)
+      ? getOptionalText(showroom.address)
+      : null,
+    showroomCity: isObjectRelation(showroom)
+      ? getOptionalText(showroom.city)
+      : null,
+    showroomPhone: isObjectRelation(showroom)
+      ? getOptionalText(showroom.phone)
+      : null,
 
     entryMileage: formatMileage(repair.entry_mileage),
     receptionistName:

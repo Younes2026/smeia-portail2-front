@@ -37,11 +37,20 @@ export type DirectusServiceType = {
   label?: string | null;
 };
 
+export type DirectusShowroom = {
+  id: number;
+  name?: string | null;
+  address?: string | null;
+  city?: string | null;
+  phone?: string | null;
+};
+
 export type DirectusWorkshop = {
   id: number;
   name: string;
   label?: string | null;
   workshop_type?: string | null;
+  showroom_id?: DirectusRelation<DirectusShowroom>;
 };
 
 export type DirectusResource = {
@@ -99,6 +108,7 @@ export type RepairListItem = {
   statusId: number | string | null;
   serviceTypeId: number | string | null;
   workshopId: number | string | null;
+  showroomId: number | null;
   realExitDate: string | null;
   entryDate: string;
   entryDateValue: string | null;
@@ -119,6 +129,10 @@ export type RepairListItem = {
   statusName: string;
   serviceTypeName: string;
   workshopName: string;
+  showroomName: string | null;
+  showroomAddress: string | null;
+  showroomCity: string | null;
+  showroomPhone: string | null;
   entryMileage: string;
   receptionistName: string;
 };

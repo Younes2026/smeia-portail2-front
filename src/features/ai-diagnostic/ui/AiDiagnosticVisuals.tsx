@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Image } from 'expo-image';
 import {
   AccessibilityInfo,
   Animated,
@@ -87,10 +88,6 @@ export function IntelligenceOrb({
     };
   }, [active, breathingScale, reducedMotion]);
 
-  const coreSize = Math.round(size * 0.34);
-  const middleSize = Math.round(size * 0.62);
-  const innerRingSize = Math.round(size * 0.78);
-
   return (
     <Animated.View
       accessible={false}
@@ -101,50 +98,12 @@ export function IntelligenceOrb({
       ]}
     >
       <View style={[styles.orbHalo, { borderRadius: size / 2 }]} />
-      <View
-        style={[
-          styles.orbOuterRing,
-          {
-            borderRadius: size / 2,
-            height: size,
-            width: size,
-          },
-        ]}
+      <Image
+        accessible={false}
+        contentFit="contain"
+        source={require('@/assets/ai/smeia-ai-orb.png')}
+        style={styles.orbAsset}
       />
-      <View
-        style={[
-          styles.orbInnerRing,
-          {
-            borderRadius: innerRingSize / 2,
-            height: innerRingSize,
-            width: innerRingSize,
-          },
-        ]}
-      />
-      <View
-        style={[
-          styles.orbMiddle,
-          {
-            borderRadius: middleSize / 2,
-            height: middleSize,
-            width: middleSize,
-          },
-        ]}
-      />
-      <View
-        style={[
-          styles.orbCore,
-          {
-            borderRadius: coreSize / 2,
-            height: coreSize,
-            width: coreSize,
-          },
-        ]}
-      >
-        <View style={styles.orbCoreGlint} />
-      </View>
-      <View style={[styles.orbLine, styles.orbLineTop]} />
-      <View style={[styles.orbLine, styles.orbLineBottom]} />
     </Animated.View>
   );
 }
@@ -252,75 +211,28 @@ const styles = StyleSheet.create({
     right: '9%',
     bottom: '9%',
     left: '9%',
-    backgroundColor: 'rgba(57, 190, 225, 0.17)',
+    backgroundColor: 'rgba(57, 190, 225, 0.12)',
     shadowColor: '#45C7E8',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.34,
-    shadowRadius: 30,
+    shadowOpacity: 0.24,
+    shadowRadius: 24,
   },
-  orbOuterRing: {
-    position: 'absolute',
-    borderWidth: 1,
-    borderColor: 'rgba(157, 226, 244, 0.38)',
-  },
-  orbInnerRing: {
-    position: 'absolute',
-    borderWidth: 1,
-    borderColor: 'rgba(137, 211, 236, 0.36)',
-    backgroundColor: 'rgba(32, 116, 177, 0.18)',
-  },
-  orbMiddle: {
-    position: 'absolute',
-    borderWidth: 1,
-    borderColor: 'rgba(204, 241, 249, 0.52)',
-    backgroundColor: 'rgba(21, 91, 152, 0.56)',
-  },
-  orbCore: {
-    alignItems: 'flex-start',
-    justifyContent: 'flex-start',
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(234, 251, 255, 0.9)',
-    backgroundColor: '#74D7ED',
-    shadowColor: '#B7F2FF',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.7,
-    shadowRadius: 18,
-  },
-  orbCoreGlint: {
-    width: '46%',
-    height: '46%',
-    marginTop: '14%',
-    marginLeft: '16%',
-    borderRadius: 999,
-    backgroundColor: 'rgba(255, 255, 255, 0.76)',
-  },
-  orbLine: {
-    position: 'absolute',
-    width: '22%',
-    height: 1,
-    backgroundColor: 'rgba(185, 235, 248, 0.62)',
-  },
-  orbLineTop: {
-    top: '27%',
-    right: '2%',
-    transform: [{ rotate: '-18deg' }],
-  },
-  orbLineBottom: {
-    bottom: '24%',
-    left: '1%',
-    transform: [{ rotate: '-18deg' }],
+  orbAsset: {
+    width: '100%',
+    height: '100%',
   },
   progressCard: {
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: '#DDE6F2',
+    borderColor: 'rgba(85, 188, 225, 0.24)',
     borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.94)',
+    backgroundColor: 'rgba(4, 19, 36, 0.86)',
+    experimental_backgroundImage:
+      'linear-gradient(145deg, rgba(7, 31, 55, 0.9) 0%, rgba(3, 16, 31, 0.92) 100%)',
     gap: spacing.md,
-    shadowColor: '#132B4F',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.06,
+    shadowOpacity: 0.24,
     shadowRadius: 24,
   },
   progressHeader: {
@@ -334,18 +246,18 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   progressEyebrow: {
-    color: '#2D69A8',
+    color: '#65D4F1',
     fontSize: 10,
     fontWeight: typography.fontWeight.bold,
     letterSpacing: 1.1,
   },
   progressTitle: {
-    color: '#0A1C35',
+    color: '#F1F8FD',
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.bold,
   },
   progressCount: {
-    color: '#2D69A8',
+    color: '#72D9F2',
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.bold,
   },
@@ -364,21 +276,25 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.sm,
     borderWidth: 1,
-    borderColor: '#E6EBF2',
+    borderColor: 'rgba(85, 143, 177, 0.2)',
     borderRadius: 14,
-    backgroundColor: '#F9FBFD',
+    backgroundColor: 'rgba(3, 16, 31, 0.66)',
   },
   stepCardCompact: {
     flexBasis: '46%',
     minWidth: 132,
   },
   stepCardActive: {
-    borderColor: '#7AB6DE',
-    backgroundColor: '#EDF7FC',
+    borderColor: '#34BDE9',
+    backgroundColor: 'rgba(10, 70, 108, 0.68)',
+    shadowColor: '#2EC3EF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
   },
   stepCardCompleted: {
-    borderColor: '#C4D9E8',
-    backgroundColor: '#F2F8FB',
+    borderColor: 'rgba(65, 164, 204, 0.4)',
+    backgroundColor: 'rgba(8, 48, 76, 0.64)',
   },
   stepNumber: {
     width: 30,
@@ -386,16 +302,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 10,
-    backgroundColor: '#E9EEF5',
+    backgroundColor: 'rgba(61, 87, 113, 0.54)',
   },
   stepNumberActive: {
-    backgroundColor: '#155C9B',
+    backgroundColor: '#168BD0',
   },
   stepNumberCompleted: {
-    backgroundColor: '#2C7DA0',
+    backgroundColor: '#247EAA',
   },
   stepNumberText: {
-    color: '#68778B',
+    color: '#A1B4C7',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold,
   },
@@ -403,12 +319,12 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   stepLabel: {
-    color: '#68778B',
+    color: '#8499AE',
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.semiBold,
   },
   stepLabelActive: {
-    color: '#123B66',
+    color: '#E5F8FF',
   },
   analysisCard: {
     alignItems: 'center',
@@ -416,7 +332,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(123, 190, 222, 0.42)',
     borderRadius: 22,
-    backgroundColor: '#0B2343',
+    backgroundColor: 'rgba(4, 25, 45, 0.86)',
+    experimental_backgroundImage:
+      'linear-gradient(145deg, rgba(8, 40, 69, 0.92) 0%, rgba(3, 18, 34, 0.94) 100%)',
     gap: spacing.md,
     overflow: 'hidden',
   },

@@ -50,6 +50,10 @@ export type ClientRepairViewModel = {
   realExitDateLabel: string | null;
   recommendationsLabel: string | null;
   serviceLabel: string;
+  showroomAddressLabel: string | null;
+  showroomCityLabel: string | null;
+  showroomLabel: string;
+  showroomPhoneLabel: string | null;
   solutionLabel: string | null;
   sortValue: number;
   statusKey: ClientRepairStatusKey;
@@ -395,6 +399,13 @@ function presentClientRepair(
       : isUsableLabel(repair.serviceTypeName)
         ? repair.serviceTypeName
         : 'Service atelier',
+    showroomAddressLabel: repair.showroomAddress,
+    showroomCityLabel: repair.showroomCity,
+    showroomLabel:
+      repair.showroomId === null
+        ? 'Non renseigné'
+        : repair.showroomName?.trim() || `Showroom #${repair.showroomId}`,
+    showroomPhoneLabel: repair.showroomPhone,
     sortValue: getSortValue(repair),
     statusKey,
     statusLabel: getClientStatusLabel(rawStatus),

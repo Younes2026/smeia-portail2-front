@@ -282,6 +282,7 @@ function RepairCard({ repair }: RepairCardProps) {
 
       <View style={styles.detailGrid}>
         <RepairDetail label="Prestation" value={repair.serviceLabel} />
+        <RepairDetail label="Showroom" value={repair.showroomLabel} />
         <RepairDetail label="Atelier" value={repair.workshopLabel} />
         <RepairDetail label="Réception" value={repair.entryDateLabel} />
       </View>
