@@ -24,6 +24,7 @@ type CalendarDay = {
 export type BookingDateCalendarProps = {
   compact: boolean;
   disabled?: boolean;
+  maximumDate: string;
   minimumDate: string;
   onSelect: (isoDate: string) => void;
   selectedDate: string | null;
@@ -148,6 +149,7 @@ function getCalendarWeeks(days: CalendarDay[]): CalendarDay[][] {
 export function BookingDateCalendar({
   compact,
   disabled = false,
+  maximumDate,
   minimumDate,
   onSelect,
   selectedDate,
@@ -159,6 +161,10 @@ export function BookingDateCalendar({
   const selectedDateParts = useMemo(
     () => (selectedDate ? parseIsoDate(selectedDate) : null),
     [selectedDate]
+  );
+  const maximumDateParts = useMemo(
+    () => parseIsoDate(maximumDate) ?? minimumDateParts,
+    [maximumDate, minimumDateParts]
   );
   const [visibleMonth, setVisibleMonth] = useState<MonthParts>(() =>
     toMonthParts(selectedDateParts ?? minimumDateParts)
@@ -172,18 +178,28 @@ export function BookingDateCalendar({
     [calendarDays]
   );
   const minimumMonthIndex = getMonthIndex(toMonthParts(minimumDateParts));
+  const maximumMonthIndex = getMonthIndex(toMonthParts(maximumDateParts));
   const canGoToPreviousMonth =
     !disabled && getMonthIndex(visibleMonth) > minimumMonthIndex;
+  const canGoToNextMonth =
+    !disabled && getMonthIndex(visibleMonth) < maximumMonthIndex;
 
   useEffect(() => {
     const nextMonth = toMonthParts(selectedDateParts ?? minimumDateParts);
 
     setVisibleMonth((currentMonth) =>
-      getMonthIndex(currentMonth) < minimumMonthIndex || selectedDateParts
+      getMonthIndex(currentMonth) < minimumMonthIndex ||
+      getMonthIndex(currentMonth) > maximumMonthIndex ||
+      selectedDateParts
         ? nextMonth
         : currentMonth
     );
-  }, [minimumDateParts, minimumMonthIndex, selectedDateParts]);
+  }, [
+    maximumMonthIndex,
+    minimumDateParts,
+    minimumMonthIndex,
+    selectedDateParts,
+  ]);
 
   const handlePreviousMonth = () => {
     if (!canGoToPreviousMonth) {
@@ -194,7 +210,7 @@ export function BookingDateCalendar({
   };
 
   const handleNextMonth = () => {
-    if (disabled) {
+    if (!canGoToNextMonth) {
       return;
     }
 
@@ -240,15 +256,15 @@ export function BookingDateCalendar({
         <Pressable
           accessibilityLabel="Afficher le mois suivant"
           accessibilityRole="button"
-          accessibilityState={{ disabled }}
-          disabled={disabled}
+          accessibilityState={{ disabled: !canGoToNextMonth }}
+          disabled={!canGoToNextMonth}
           onPress={handleNextMonth}
           style={({ hovered, pressed }) => [
             styles.navigationButton,
             compact && styles.navigationButtonCompact,
-            hovered && !disabled && styles.navigationButtonHovered,
-            pressed && !disabled && styles.pressed,
-            disabled && styles.disabled,
+            hovered && canGoToNextMonth && styles.navigationButtonHovered,
+            pressed && canGoToNextMonth && styles.pressed,
+            !canGoToNextMonth && styles.disabled,
           ]}
         >
           <Text style={styles.navigationButtonText}>›</Text>
@@ -271,9 +287,11 @@ export function BookingDateCalendar({
           >
             {week.map(({ date, isoDate, isCurrentMonth }) => {
               const isPast = isoDate < minimumDate;
+              const isAfterMaximum = isoDate > maximumDate;
               const isSelected = isoDate === selectedDate;
               const isToday = isoDate === minimumDate;
-              const isDayDisabled = disabled || !isCurrentMonth || isPast;
+              const isDayDisabled =
+                disabled || !isCurrentMonth || isPast || isAfterMaximum;
 
               return (
                 <Pressable
@@ -297,6 +315,7 @@ export function BookingDateCalendar({
                     compact && styles.dayCellCompact,
                     !isCurrentMonth && styles.outsideMonthCell,
                     isPast && isCurrentMonth && styles.pastDayCell,
+                    isAfterMaximum && isCurrentMonth && styles.pastDayCell,
                     isToday && isCurrentMonth && styles.todayCell,
                     isSelected && styles.selectedDayCell,
                     hovered && !isDayDisabled && !isSelected &&
@@ -311,6 +330,7 @@ export function BookingDateCalendar({
                       compact && styles.dayTextCompact,
                       !isCurrentMonth && styles.outsideMonthText,
                       isPast && isCurrentMonth && styles.pastDayText,
+                      isAfterMaximum && isCurrentMonth && styles.pastDayText,
                       isSelected && styles.selectedDayText,
                     ]}
                   >

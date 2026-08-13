@@ -1,5 +1,5 @@
 import { Image } from 'expo-image';
-import { Link } from 'expo-router';
+import { Link, useRouter } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { useMemo, useState, type ComponentProps } from 'react';
 import {
@@ -34,6 +34,7 @@ import type { VehicleListItem } from '@/features/vehicles/model/vehicle.types';
 import { useAuthStore } from '@/store/auth.store';
 
 type SymbolName = ComponentProps<typeof SymbolView>['name'];
+type AppointmentJourneyChoice = 'classic' | null;
 
 type StepDefinition = {
   description: string;
@@ -249,6 +250,7 @@ function formatShortAppointmentDate(requestedDate: string): string {
 }
 
 export function AppointmentsScreen() {
+  const router = useRouter();
   const { width } = useWindowDimensions();
   const isCompact = width < breakpoints.desktop;
   const isNarrow = width < breakpoints.tablet;
@@ -261,6 +263,8 @@ export function AppointmentsScreen() {
   const [requestedDate, setRequestedDate] = useState('');
   const [requestedTime, setRequestedTime] = useState('');
   const [comment, setComment] = useState('');
+  const [journeyChoice, setJourneyChoice] =
+    useState<AppointmentJourneyChoice>(null);
   const vehiclesQuery = useVehicles();
   const workshopsQuery = useWorkshops();
   const showroomsQuery = useShowrooms();
@@ -398,6 +402,43 @@ export function AppointmentsScreen() {
     });
   };
 
+  const returnToJourneyChoice = () => {
+    if (createAppointment.isSuccess || createAppointment.isPending) {
+      return;
+    }
+
+    setActiveStep(0);
+    setFurthestStep(0);
+    setSummaryExpanded(false);
+    setSelectedVehicleId(null);
+    setSelectedWorkshopId(null);
+    setSelectedServiceTypeId(null);
+    setRequestedDate('');
+    setRequestedTime('');
+    setComment('');
+    createAppointment.reset();
+    setJourneyChoice(null);
+  };
+
+  if (journeyChoice === null) {
+    return (
+      <ClientPortalLayout activeRoute="/appointments">
+        <AppointmentJourneyChooser
+          compact={isNarrow}
+          onClassic={() => {
+            setJourneyChoice('classic');
+          }}
+          onGuided={() => {
+            router.push({
+              pathname: '/ai-diagnostic',
+              params: { mode: 'booking', source: 'appointments' },
+            });
+          }}
+        />
+      </ClientPortalLayout>
+    );
+  }
+
   if (isLoading) {
     return (
       <ClientPortalLayout activeRoute="/appointments">
@@ -427,6 +468,28 @@ export function AppointmentsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator
       >
+        {!createAppointment.isSuccess ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={createAppointment.isPending}
+            onPress={returnToJourneyChoice}
+            style={({ hovered, pressed }) => [
+              styles.journeyBackAction,
+              hovered && !createAppointment.isPending &&
+                styles.secondaryActionHovered,
+              pressed && styles.pressed,
+              createAppointment.isPending && styles.disabled,
+            ]}
+          >
+            <SymbolView
+              name={{ ios: 'arrow.left', android: 'arrow_back', web: 'arrow_back' }}
+              size={16}
+              tintColor="#2F5FA6"
+            />
+            <Text style={styles.secondaryActionText}>Changer de parcours</Text>
+          </Pressable>
+        ) : null}
+
         <AppointmentHeader activeStep={activeStep} progress={progress} />
 
         <HorizontalStepper
@@ -556,6 +619,89 @@ export function AppointmentsScreen() {
         )}
       </ScrollView>
     </ClientPortalLayout>
+  );
+}
+
+function AppointmentJourneyChooser({
+  compact,
+  onClassic,
+  onGuided,
+}: {
+  compact: boolean;
+  onClassic: () => void;
+  onGuided: () => void;
+}) {
+  return (
+    <ScrollView
+      style={styles.contentScroll}
+      contentContainerStyle={styles.journeyChooserContent}
+      showsVerticalScrollIndicator
+    >
+      <View style={styles.journeyChooserHero}>
+        <Text style={styles.eyebrow}>RENDEZ-VOUS SMEIA</Text>
+        <Text style={styles.title}>Comment souhaitez-vous prendre rendez-vous ?</Text>
+        <Text style={styles.subtitle}>
+          Choisissez le parcours qui correspond le mieux à votre besoin.
+        </Text>
+      </View>
+
+      <View style={[styles.journeyCards, compact && styles.journeyCardsCompact]}>
+        <JourneyCard
+          buttonLabel="Continuer avec le parcours classique"
+          description="Je connais déjà la prestation et l’atelier souhaités."
+          icon={{ ios: 'list.bullet.clipboard', android: 'fact_check', web: 'fact_check' }}
+          title="Parcours classique"
+          onPress={onClassic}
+        />
+        <JourneyCard
+          accent
+          buttonLabel="Prendre rendez-vous avec l’Assistant IA"
+          description="Je souhaite être orienté ou préparer ma demande avec l’Assistant IA."
+          icon={{ ios: 'sparkles', android: 'auto_awesome', web: 'auto_awesome' }}
+          title="Réservation guidée"
+          onPress={onGuided}
+        />
+      </View>
+    </ScrollView>
+  );
+}
+
+function JourneyCard({
+  accent = false,
+  buttonLabel,
+  description,
+  icon,
+  title,
+  onPress,
+}: {
+  accent?: boolean;
+  buttonLabel: string;
+  description: string;
+  icon: SymbolName;
+  title: string;
+  onPress: () => void;
+}) {
+  return (
+    <View style={[styles.journeyCard, accent && styles.journeyCardAccent]}>
+      <View style={[styles.journeyCardIcon, accent && styles.journeyCardIconAccent]}>
+        <SymbolView name={icon} size={26} tintColor={accent ? '#FFFFFF' : '#2F5FA6'} />
+      </View>
+      <Text style={styles.journeyCardTitle}>{title}</Text>
+      <Text style={styles.journeyCardDescription}>{description}</Text>
+      <Pressable
+        accessibilityLabel={buttonLabel}
+        accessibilityRole="button"
+        onPress={onPress}
+        style={({ hovered, pressed }) => [
+          styles.journeyCardAction,
+          accent && styles.journeyCardActionAccent,
+          hovered && styles.primaryActionHovered,
+          pressed && styles.pressed,
+        ]}
+      >
+        <Text style={styles.primaryActionText}>{buttonLabel}</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -1606,6 +1752,84 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     padding: spacing.md,
     paddingBottom: spacing.xxl,
+  },
+  journeyChooserContent: {
+    width: '100%',
+    maxWidth: 1120,
+    minHeight: '100%',
+    alignSelf: 'center',
+    justifyContent: 'center',
+    gap: spacing.lg,
+    padding: spacing.lg,
+    paddingBottom: spacing.xxl,
+  },
+  journeyChooserHero: {
+    gap: spacing.sm,
+    padding: spacing.xl,
+    borderRadius: 24,
+    backgroundColor: '#0B1220',
+  },
+  journeyCards: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: spacing.lg,
+  },
+  journeyCardsCompact: { flexDirection: 'column' },
+  journeyCard: {
+    flex: 1,
+    minWidth: 0,
+    gap: spacing.md,
+    padding: spacing.xl,
+    borderWidth: 1,
+    borderColor: '#D8E2F0',
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+  },
+  journeyCardAccent: {
+    borderColor: '#82B1E8',
+    backgroundColor: '#F4F8FD',
+  },
+  journeyCardIcon: {
+    width: 54,
+    height: 54,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 16,
+    backgroundColor: '#EAF2FC',
+  },
+  journeyCardIconAccent: { backgroundColor: '#2F5FA6' },
+  journeyCardTitle: {
+    color: '#15294D',
+    fontSize: typography.fontSize.xl,
+    fontWeight: typography.fontWeight.bold,
+  },
+  journeyCardDescription: {
+    flex: 1,
+    color: '#5A6470',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+  journeyCardAction: {
+    minHeight: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: 14,
+    backgroundColor: '#355A88',
+  },
+  journeyCardActionAccent: { backgroundColor: '#2F5FA6' },
+  journeyBackAction: {
+    minHeight: 42,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: '#C8D5E6',
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
   },
   header: {
     flexDirection: 'row',

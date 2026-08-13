@@ -3,6 +3,7 @@ import { httpClient } from '@/core/api/http-client';
 export type DictionaryItem = {
   id: number;
   name: string;
+  qualification_code?: string | null;
 };
 
 export type Workshop = {

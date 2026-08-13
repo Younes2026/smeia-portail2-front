@@ -1,6 +1,7 @@
 import { HttpError } from '@/core/api/http-client';
 
 export const AI_BOOKING_TIME_ZONE = 'Africa/Casablanca';
+export const AI_BOOKING_WINDOW_DAYS = 30;
 
 const bookingErrorMessages: Readonly<Record<string, string>> = {
   INVALID_REQUEST: 'Les informations envoyées sont invalides.',
@@ -42,9 +43,27 @@ export function getCasablancaTodayIso(now = new Date()): string {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+export function addBookingDays(value: string, days: number): string {
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day + days));
+
+  return [
+    String(parsed.getUTCFullYear()).padStart(4, '0'),
+    String(parsed.getUTCMonth() + 1).padStart(2, '0'),
+    String(parsed.getUTCDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+export function getBookingWindowEndIso(
+  minimumDate = getCasablancaTodayIso()
+): string {
+  return addBookingDays(minimumDate, AI_BOOKING_WINDOW_DAYS - 1);
+}
+
 export function isValidBookingDate(
   value: string,
-  minimumDate = getCasablancaTodayIso()
+  minimumDate = getCasablancaTodayIso(),
+  maximumDate = getBookingWindowEndIso(minimumDate)
 ): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
 
@@ -61,7 +80,22 @@ export function isValidBookingDate(
     parsed.getUTCMonth() === month - 1 &&
     parsed.getUTCDate() === day;
 
-  return isCalendarDate && value >= minimumDate;
+  return isCalendarDate && value >= minimumDate && value <= maximumDate;
+}
+
+export function getCompatibleWorkshopIds(
+  qualificationCode: string | null | undefined
+): readonly number[] {
+  switch (qualificationCode?.trim()) {
+    case 'MEC-DIAG B':
+      return [1, 2];
+    case 'CAR':
+      return [3];
+    case 'PEINT':
+      return [4];
+    default:
+      return [];
+  }
 }
 
 export function formatBookingDate(value: string): string {
@@ -113,6 +147,20 @@ export function getAiBookingErrorMessage(error: unknown): string {
   }
 
   return 'La réservation est temporairement indisponible.';
+}
+
+export function getDaySlotsNotFoundMessage(
+  period: 'any' | 'morning' | 'afternoon'
+): string {
+  if (period === 'morning') {
+    return 'Aucun créneau disponible le matin pour cette date.';
+  }
+
+  if (period === 'afternoon') {
+    return 'Aucun créneau disponible l’après-midi pour cette date.';
+  }
+
+  return 'Aucun créneau disponible pour cette date.';
 }
 
 export function isBookingConflict(error: unknown): boolean {

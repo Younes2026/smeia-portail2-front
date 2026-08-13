@@ -5,6 +5,7 @@ import type {
 import { httpClient } from '@/core/api/http-client';
 
 export type AiBookingPreferredPeriod = 'any' | 'morning' | 'afternoon';
+export type AiBookingResultMode = 'suggestions' | 'day_slots';
 
 export type SearchAiAppointmentAvailabilityInput = {
   vehicle_id: number;
@@ -14,6 +15,7 @@ export type SearchAiAppointmentAvailabilityInput = {
     | [AiDiagnosticWorkshopId, AiDiagnosticWorkshopId];
   preferred_date: string | null;
   preferred_period: AiBookingPreferredPeriod;
+  result_mode?: AiBookingResultMode;
 };
 
 export type AiBookingShowroom = {
