@@ -26,6 +26,7 @@ import type {
   AiBookingResultMode,
 } from '@/core/api/ai-booking.api';
 import type {
+  AiBookingWorkshopType,
   AiDiagnosticAnswer,
   AiDiagnosticConfidence,
   AiDiagnosticDrivingAdvice,
@@ -34,13 +35,12 @@ import type {
   AiDiagnosticQuestion,
   AiDiagnosticResult,
   AiDiagnosticServiceTypeId,
-  AiDiagnosticWorkshopId,
 } from '@/core/api/ai-diagnostics.api';
-import type { DictionaryItem, Workshop } from '@/core/api/dictionaries.api';
+import type { DictionaryItem } from '@/core/api/dictionaries.api';
 import { HttpError } from '@/core/api/http-client';
 import {
   useServiceTypes,
-  useWorkshops,
+  useShowrooms,
 } from '@/core/api/use-dictionaries';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { spacing } from '@/core/theme/spacing';
@@ -55,8 +55,9 @@ import {
   getAiBookingErrorMessage,
   getBookingWindowEndIso,
   getCasablancaTodayIso,
-  getCompatibleWorkshopIds,
+  getCompatibleWorkshopTypes,
   getDaySlotsNotFoundMessage,
+  getWorkshopTypeLabel,
   isBookingConflict,
   isBookingOptionExpired,
   isValidBookingDate,
@@ -159,11 +160,7 @@ const confidenceLabels: Record<AiDiagnosticConfidence, string> = {
 
 type JourneyStep = 'initial' | 'answering' | 'result';
 type BookingPreparationChoice = 'orientation' | 'manual';
-type ManualBookingNeed =
-  | 'diagnostic'
-  | 'mechanical'
-  | 'bodywork'
-  | 'paint';
+type ManualBookingNeed = AiBookingWorkshopType;
 type ManualQuoteChoice = 'without_quote' | 'with_quote';
 
 type InitialFormErrors = {
@@ -324,21 +321,10 @@ function getServiceTypeName(
   return serviceName || 'Nom du service indisponible';
 }
 
-function getWorkshopDisplayNames(
-  workshopIds: readonly number[],
-  workshops: readonly Workshop[]
+function getWorkshopTypeLabels(
+  workshopTypes: readonly AiBookingWorkshopType[]
 ): string[] {
-  if (workshopIds.length === 0) {
-    return [];
-  }
-
-  return workshopIds.map((workshopId) => {
-    const workshopName = workshops
-      .find((workshop) => workshop.id === workshopId)
-      ?.name.trim();
-
-    return workshopName || "Nom de l'atelier indisponible";
-  });
+  return workshopTypes.map(getWorkshopTypeLabel);
 }
 
 function createSecureIdempotencyKey(): string | null {
@@ -362,8 +348,7 @@ type AiBookingContext = {
   problemSummary: string;
   serviceTypeId: AiDiagnosticServiceTypeId;
   serviceTypeName: string;
-  workshopCardLabel: string;
-  workshopIds: readonly AiDiagnosticWorkshopId[];
+  workshopTypes: readonly AiBookingWorkshopType[];
   workshopSelectionDescription: string;
 };
 
@@ -374,15 +359,14 @@ type BookingContactDetails = {
   address: string | null;
 };
 
-const AI_BOOKING_WORKSHOP_IDS = new Set<number>([1, 2, 3, 4]);
 const MANUAL_BOOKING_NEEDS: ReadonlyArray<{
   label: string;
   value: ManualBookingNeed;
 }> = [
   { label: 'Diagnostic ou voyant', value: 'diagnostic' },
-  { label: 'Problème mécanique', value: 'mechanical' },
-  { label: 'Carrosserie', value: 'bodywork' },
-  { label: 'Peinture', value: 'paint' },
+  { label: 'Problème mécanique', value: 'mecanique' },
+  { label: 'Carrosserie', value: 'carrosserie' },
+  { label: 'Peinture', value: 'peinture' },
 ];
 
 const MANUAL_PROBLEM_SUMMARY_BY_SERVICE_TYPE_ID: Readonly<
@@ -409,11 +393,11 @@ function getManualServiceTypeId(
     return null;
   }
 
-  if (need === 'mechanical') {
+  if (need === 'mecanique') {
     return quoteChoice === 'with_quote' ? 8 : 3;
   }
 
-  if (need === 'bodywork') {
+  if (need === 'carrosserie') {
     return quoteChoice === 'with_quote' ? 6 : 4;
   }
 
@@ -438,14 +422,8 @@ function getSingleSearchParam(
   return Array.isArray(value) ? value[0] : value;
 }
 
-function isAiBookingWorkshopId(
-  value: number
-): value is AiDiagnosticWorkshopId {
-  return AI_BOOKING_WORKSHOP_IDS.has(value);
-}
-
 const bookingStepLabels = [
-  'Atelier',
+  'Site SMEIA',
   'Préférence',
   'Créneau',
   'Confirmation',
@@ -501,7 +479,6 @@ export function AiDiagnosticScreen() {
   const [bookingRequested, setBookingRequested] = useState(false);
   const vehiclesQuery = useVehicles();
   const serviceTypesQuery = useServiceTypes();
-  const workshopsQuery = useWorkshops();
   const analyzeDiagnostic = useAnalyzeAiDiagnostic();
   const { showToast } = useToasts();
   const user = useAuthStore((state) => state.user);
@@ -892,12 +869,9 @@ export function AiDiagnosticScreen() {
             isNarrow={isNarrow}
             isServiceTypesError={serviceTypesQuery.isError}
             isServiceTypesLoading={serviceTypesQuery.isLoading}
-            isWorkshopsError={workshopsQuery.isError}
-            isWorkshopsLoading={workshopsQuery.isLoading}
             onChangeJourney={changeBookingJourney}
             serviceTypes={serviceTypesQuery.data ?? []}
             vehicles={vehicles}
-            workshops={workshopsQuery.data ?? []}
           />
         ) : (
           <>
@@ -994,7 +968,6 @@ export function AiDiagnosticScreen() {
                 isNarrow={isNarrow}
                 showBooking={isBookingMode || bookingRequested}
                 isServiceTypesLoading={serviceTypesQuery.isLoading}
-                isWorkshopsLoading={workshopsQuery.isLoading}
                 onChangeJourney={changeBookingJourney}
                 onReset={resetJourney}
                 onStartBooking={() => {
@@ -1004,7 +977,6 @@ export function AiDiagnosticScreen() {
                 result={result}
                 selectedVehicle={selectedVehicle}
                 serviceTypes={serviceTypesQuery.data ?? []}
-                workshops={workshopsQuery.data ?? []}
               />
             ) : null}
 
@@ -1055,12 +1027,12 @@ function BookingPreparationChooser({
       </Text>
       <View style={[styles.bookingWelcomeGrid, isNarrow && styles.stack]}>
         <PreparationCard
-          description="L’Assistant IA analyse votre besoin et recommande une prestation et un atelier."
+          description="L’Assistant IA analyse votre besoin et recommande une prestation et un type d’atelier."
           title="J’ai besoin d’une orientation"
           onPress={onOrientation}
         />
         <PreparationCard
-          description="Choisissez directement votre prestation et un atelier compatible."
+          description="Choisissez directement votre besoin et le type d’atelier compatible."
           title="Je connais déjà mon besoin"
           onPress={onManual}
         />
@@ -1104,23 +1076,17 @@ function ManualBookingJourney({
   isNarrow,
   isServiceTypesError,
   isServiceTypesLoading,
-  isWorkshopsError,
-  isWorkshopsLoading,
   onChangeJourney,
   serviceTypes,
   vehicles,
-  workshops,
 }: {
   contacts: BookingContactDetails;
   isNarrow: boolean;
   isServiceTypesError: boolean;
   isServiceTypesLoading: boolean;
-  isWorkshopsError: boolean;
-  isWorkshopsLoading: boolean;
   onChangeJourney: () => void;
   serviceTypes: readonly DictionaryItem[];
   vehicles: readonly VehicleListItem[];
-  workshops: readonly Workshop[];
 }) {
   const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
   const [selectedNeed, setSelectedNeed] = useState<ManualBookingNeed | null>(null);
@@ -1144,34 +1110,29 @@ function ManualBookingJourney({
   const selectedNeedLabel =
     MANUAL_BOOKING_NEEDS.find((need) => need.value === selectedNeed)?.label ??
     null;
-  const compatibleWorkshopIds = useMemo(
+  const compatibleWorkshopTypes = useMemo(
     () =>
-      getCompatibleWorkshopIds(selectedServiceType?.qualification_code)
-        .filter(isAiBookingWorkshopId)
-        .filter((workshopId) =>
-          workshops.some((workshop) => workshop.id === workshopId)
-        ),
-    [selectedServiceType?.qualification_code, workshops]
+      getCompatibleWorkshopTypes(selectedServiceType?.qualification_code),
+    [selectedServiceType?.qualification_code]
   );
-  const compatibleWorkshops = compatibleWorkshopIds
-    .map((workshopId) =>
-      workshops.find((workshop) => workshop.id === workshopId)
-    )
-    .filter((workshop): workshop is Workshop => workshop !== undefined);
+  const selectedWorkshopTypes =
+    selectedNeed && compatibleWorkshopTypes.includes(selectedNeed)
+      ? [selectedNeed]
+      : [];
   const requiresQuoteChoice =
     selectedNeed !== null && selectedNeed !== 'diagnostic';
-  const catalogIsPending = isServiceTypesLoading || isWorkshopsLoading;
-  const catalogHasError = isServiceTypesError || isWorkshopsError;
+  const catalogIsPending = isServiceTypesLoading;
+  const catalogHasError = isServiceTypesError;
   const expectedServiceIsMissing =
     expectedServiceTypeId !== null &&
     !catalogIsPending &&
     !catalogHasError &&
     selectedServiceType === null;
-  const compatibleWorkshopsAreMissing =
+  const compatibleWorkshopTypeIsMissing =
     selectedServiceType !== null &&
     !catalogIsPending &&
     !catalogHasError &&
-    compatibleWorkshopIds.length === 0;
+    selectedWorkshopTypes.length === 0;
 
   const invalidateBooking = () => {
     setSubmittedContext(null);
@@ -1211,9 +1172,9 @@ function ManualBookingJourney({
       return;
     }
 
-    if (compatibleWorkshopIds.length === 0) {
+    if (selectedWorkshopTypes.length === 0) {
       setFormError(
-        'Aucun atelier compatible n’est configuré pour cette prestation.'
+        'Aucun type d’atelier compatible n’est configuré pour cette prestation.'
       );
       return;
     }
@@ -1235,10 +1196,9 @@ function ManualBookingJourney({
       problemSummary,
       serviceTypeId: expectedServiceTypeId,
       serviceTypeName: selectedServiceType.name,
-      workshopCardLabel: 'Atelier compatible',
-      workshopIds: compatibleWorkshopIds,
+      workshopTypes: selectedWorkshopTypes,
       workshopSelectionDescription:
-        'Seuls les ateliers compatibles avec la prestation déterminée sont proposés.',
+        'Le site choisi sera utilisé pour résoudre l’atelier physique compatible.',
     });
   };
 
@@ -1248,7 +1208,7 @@ function ManualBookingJourney({
         <SectionIntro
           kicker="RÉSERVATION SANS ANALYSE IA"
           title="Préparez votre demande"
-          text="Renseignez votre besoin. Les prestations et ateliers proposés proviennent des catalogues SMEIA."
+          text="Renseignez votre besoin. La prestation et le type d’atelier sont déterminés selon les règles SMEIA."
         />
 
         <View style={styles.formSection}>
@@ -1374,9 +1334,9 @@ function ManualBookingJourney({
                 message="La prestation SMEIA attendue n’est pas disponible dans le catalogue chargé."
                 title="Configuration indisponible"
               />
-            ) : compatibleWorkshopsAreMissing ? (
+            ) : compatibleWorkshopTypeIsMissing ? (
               <ControlledErrorPanel
-                message="Aucun atelier compatible n’est configuré pour cette prestation."
+                message="Aucun type d’atelier compatible n’est configuré pour cette prestation."
                 title="Configuration indisponible"
               />
             ) : selectedServiceType && selectedNeedLabel ? (
@@ -1390,13 +1350,9 @@ function ManualBookingJourney({
                   value={selectedServiceType.name}
                 />
                 <BookingSummaryItem
-                  label={
-                    compatibleWorkshops.length === 1
-                      ? 'Atelier compatible'
-                      : 'Ateliers compatibles'
-                  }
-                  value={compatibleWorkshops
-                    .map((workshop) => workshop.name)
+                  label="Type d’atelier"
+                  value={selectedWorkshopTypes
+                    .map(getWorkshopTypeLabel)
                     .join(' • ')}
                 />
               </View>
@@ -1404,7 +1360,7 @@ function ManualBookingJourney({
           </View>
         ) : null}
 
-        {selectedServiceType && compatibleWorkshopIds.length > 0 ? (
+        {selectedServiceType && selectedWorkshopTypes.length > 0 ? (
           <View style={styles.formSection}>
             <Text style={styles.bookingFieldLabel}>
               Ajouter une précision — facultatif
@@ -1435,7 +1391,7 @@ function ManualBookingJourney({
           <ControlledErrorPanel message={formError} title="Demande incomplète" />
         ) : null}
 
-        {selectedServiceType && compatibleWorkshopIds.length > 0 ? (
+        {selectedServiceType && selectedWorkshopTypes.length > 0 ? (
           <Pressable
             accessibilityRole="button"
             disabled={catalogIsPending || catalogHasError}
@@ -1449,7 +1405,7 @@ function ManualBookingJourney({
             ]}
           >
             <Text style={styles.bookingPrimaryActionText}>
-              Continuer vers les ateliers compatibles
+              Continuer vers le choix du site
             </Text>
           </Pressable>
         ) : null}
@@ -1466,7 +1422,6 @@ function ManualBookingJourney({
           isNarrow={isNarrow}
           onChangeJourney={onChangeJourney}
           selectedVehicle={selectedVehicle}
-          workshops={workshops}
         />
       ) : null}
     </View>
@@ -1960,13 +1915,11 @@ type DiagnosticResultPanelProps = {
   contacts: BookingContactDetails;
   isNarrow: boolean;
   isServiceTypesLoading: boolean;
-  isWorkshopsLoading: boolean;
   photo: SelectedAiPhoto | null;
   result: AiDiagnosticResult;
   selectedVehicle: VehicleListItem | null;
   showBooking: boolean;
   serviceTypes: readonly DictionaryItem[];
-  workshops: readonly Workshop[];
   onChangeJourney: () => void;
   onReset: () => void;
   onStartBooking: () => void;
@@ -1976,13 +1929,11 @@ function DiagnosticResultPanel({
   contacts,
   isNarrow,
   isServiceTypesLoading,
-  isWorkshopsLoading,
   photo,
   result,
   selectedVehicle,
   showBooking,
   serviceTypes,
-  workshops,
   onChangeJourney,
   onReset,
   onStartBooking,
@@ -2028,9 +1979,8 @@ function DiagnosticResultPanel({
     result.suggested_service_type_id,
     serviceTypes
   );
-  const workshopNames = getWorkshopDisplayNames(
-    result.suggested_workshop_ids,
-    workshops
+  const workshopTypeLabels = getWorkshopTypeLabels(
+    result.suggested_workshop_types
   );
   const urgencyTone: ResultMetricTone =
     result.urgency_level === 'low'
@@ -2170,29 +2120,24 @@ function DiagnosticResultPanel({
               </View>
             )}
 
-            <Text style={styles.workshopsTitle}>Ateliers proposés</Text>
-            {isWorkshopsLoading ? (
+            <Text style={styles.workshopsTitle}>Types d’ateliers proposés</Text>
+            {workshopTypeLabels.length > 0 ? (
               <View style={styles.workshopGrid}>
-                <View style={styles.workshopSkeleton} />
-                <View style={styles.workshopSkeleton} />
-              </View>
-            ) : workshopNames.length > 0 ? (
-              <View style={styles.workshopGrid}>
-                {workshopNames.map((workshopName, index) => (
+                {workshopTypeLabels.map((workshopTypeLabel, index) => (
                   <View
-                    key={`${workshopName}:${index}`}
+                    key={`${workshopTypeLabel}:${index}`}
                     style={styles.workshopCard}
                   >
                     <View style={styles.workshopIndex}>
                       <Text style={styles.workshopIndexText}>{index + 1}</Text>
                     </View>
-                    <Text style={styles.workshopName}>{workshopName}</Text>
+                    <Text style={styles.workshopName}>{workshopTypeLabel}</Text>
                   </View>
                 ))}
               </View>
             ) : (
               <Text style={styles.catalogUnavailableText}>
-                Aucun atelier proposé
+                Aucun type d’atelier proposé
               </Text>
             )}
           </View>
@@ -2235,15 +2180,13 @@ function DiagnosticResultPanel({
             problemSummary: result.problem_summary,
             serviceTypeId: result.suggested_service_type_id,
             serviceTypeName,
-            workshopCardLabel: 'Atelier recommandé',
-            workshopIds: result.suggested_workshop_ids,
+            workshopTypes: result.suggested_workshop_types,
             workshopSelectionDescription:
-              'Seuls les ateliers recommandés par l’orientation IA sont proposés.',
+              'Les types recommandés seront résolus dans le site SMEIA choisi.',
           }}
           isNarrow={isNarrow}
           onChangeJourney={onChangeJourney}
           selectedVehicle={selectedVehicle}
-          workshops={workshops}
         />
       ) : null}
 
@@ -2301,20 +2244,19 @@ type AiBookingPanelProps = {
   isNarrow: boolean;
   onChangeJourney: () => void;
   selectedVehicle: VehicleListItem;
-  workshops: readonly Workshop[];
 };
 
 type BookingOptionGroup = {
   options: AiBookingAvailabilityOption[];
   showroomName: string;
-  workshopId: AiDiagnosticWorkshopId;
+  workshopId: number;
   workshopName: string;
 };
 
 function groupBookingOptionsByWorkshop(
   options: readonly AiBookingAvailabilityOption[]
 ): BookingOptionGroup[] {
-  const groups = new Map<AiDiagnosticWorkshopId, BookingOptionGroup>();
+  const groups = new Map<number, BookingOptionGroup>();
 
   for (const option of options) {
     const group = groups.get(option.workshop_id);
@@ -2341,15 +2283,15 @@ function AiBookingPanel({
   isNarrow,
   onChangeJourney,
   selectedVehicle,
-  workshops,
 }: AiBookingPanelProps) {
+  const showroomsQuery = useShowrooms();
   const availabilityMutation = useSearchAiAppointmentAvailability();
   const confirmationMutation = useConfirmAiAppointment();
   const availabilityLockRef = useRef(false);
   const confirmationLockRef = useRef(false);
   const idempotencyAttemptRef = useRef<BookingIdempotencyAttempt | null>(null);
-  const [selectedWorkshopId, setSelectedWorkshopId] =
-    useState<AiDiagnosticWorkshopId | null>(null);
+  const [selectedShowroomId, setSelectedShowroomId] =
+    useState<number | null>(null);
   const [dateMode, setDateMode] = useState<BookingDateMode>('earliest');
   const [preferredDate, setPreferredDate] = useState('');
   const [preferredPeriod, setPreferredPeriod] =
@@ -2380,16 +2322,7 @@ function AiBookingPanel({
   const minimumDate = getCasablancaTodayIso();
   const maximumDate = getBookingWindowEndIso(minimumDate);
   const serviceTypeId = context.serviceTypeId;
-  const recommendedWorkshops = useMemo(
-    () =>
-      context.workshopIds.map((workshopId) => ({
-        id: workshopId,
-        name:
-          workshops.find((workshop) => workshop.id === workshopId)?.name.trim() ||
-          "Nom de l'atelier indisponible",
-      })),
-    [context.workshopIds, workshops]
-  );
+  const showrooms = showroomsQuery.data ?? [];
   const hasReachedSlotSelection =
     availability !== null ||
     (availabilityView === 'day_slots' && !showDayPicker);
@@ -2397,7 +2330,7 @@ function AiBookingPanel({
     ? 4
     : hasReachedSlotSelection
       ? 3
-      : selectedWorkshopId
+      : selectedShowroomId
         ? 2
         : 1;
   const isBookingPending =
@@ -2475,16 +2408,20 @@ function AiBookingPanel({
     availabilityMutation.reset();
   };
 
-  const handleWorkshopSelection = (workshopId: AiDiagnosticWorkshopId) => {
+  const handleShowroomSelection = (showroomId: number) => {
     if (isBookingPending) {
       return;
     }
 
-    if (workshopId !== selectedWorkshopId) {
+    if (showroomId !== selectedShowroomId) {
       clearAvailability();
+      setDateMode('earliest');
+      setPreferredDate('');
+      setPreferredPeriod('any');
+      setBookingSuccess(null);
       setBookingError(null);
       setPreferenceError(null);
-      setSelectedWorkshopId(workshopId);
+      setSelectedShowroomId(showroomId);
     }
   };
 
@@ -2530,7 +2467,8 @@ function AiBookingPanel({
       availabilityLockRef.current ||
       availabilityMutation.isPending ||
       confirmationMutation.isPending ||
-      selectedWorkshopId === null
+      selectedShowroomId === null ||
+      context.workshopTypes.length === 0
     ) {
       return;
     }
@@ -2567,7 +2505,8 @@ function AiBookingPanel({
       {
         vehicle_id: selectedVehicle.id,
         service_type_id: serviceTypeId,
-        workshop_ids: [selectedWorkshopId],
+        showroom_id: selectedShowroomId,
+        workshop_types: [...context.workshopTypes],
         preferred_date: requestedDate,
         preferred_period: requestedPeriod,
         result_mode: resultMode,
@@ -2875,8 +2814,8 @@ function AiBookingPanel({
           <Text style={styles.bookingKicker}>PRISE EN CHARGE SMEIA</Text>
           <Text style={styles.bookingTitle}>Planifier mon rendez-vous</Text>
           <Text style={styles.bookingLead}>
-            Choisissez un atelier recommandé, puis consultez les créneaux réels
-            proposés par le service SAV.
+            Choisissez votre site SMEIA, puis consultez les créneaux réels des
+            ateliers compatibles proposés par le service SAV.
           </Text>
         </View>
         <View style={styles.bookingPendingBadge}>
@@ -2942,20 +2881,33 @@ function AiBookingPanel({
         ]}
       >
         <Text style={styles.bookingSectionKicker}>ÉTAPE 1</Text>
-        <Text style={styles.bookingSectionTitle}>Choisissez votre atelier</Text>
+        <Text style={styles.bookingSectionTitle}>
+          Choisissez votre site SMEIA
+        </Text>
         <Text style={styles.bookingSectionText}>
           {context.workshopSelectionDescription}
         </Text>
 
-        {recommendedWorkshops.length > 0 ? (
+        {showroomsQuery.isLoading ? (
+          <LoadingState message="Chargement des sites SMEIA…" />
+        ) : showroomsQuery.isError ? (
+          <ControlledErrorPanel
+            message="Les sites SMEIA sont temporairement indisponibles."
+            title="Réservation indisponible"
+          />
+        ) : showrooms.length > 0 ? (
           <View style={styles.bookingWorkshopGrid}>
-            {recommendedWorkshops.map((workshop) => {
-              const selected = selectedWorkshopId === workshop.id;
+            {showrooms.map((showroom) => {
+              const selected = selectedShowroomId === showroom.id;
+              const location = [showroom.city, showroom.address]
+                .map((value) => value?.trim())
+                .filter((value): value is string => Boolean(value))
+                .join(' • ');
 
               return (
                 <Pressable
-                  key={workshop.id}
-                  accessibilityLabel={`Choisir ${workshop.name}`}
+                  key={showroom.id}
+                  accessibilityLabel={`Choisir le site ${showroom.name}${location ? `, ${location}` : ''}`}
                   accessibilityRole="button"
                   accessibilityState={{
                     disabled: isBookingPending,
@@ -2963,7 +2915,7 @@ function AiBookingPanel({
                   }}
                   disabled={isBookingPending}
                   onPress={() => {
-                    handleWorkshopSelection(workshop.id);
+                    handleShowroomSelection(showroom.id);
                   }}
                   style={({ hovered, pressed }) => [
                     styles.bookingWorkshopCard,
@@ -2982,12 +2934,13 @@ function AiBookingPanel({
                     ]}
                   />
                   <View style={styles.bookingWorkshopCopy}>
-                    <Text style={styles.bookingSmallLabel}>
-                      {context.workshopCardLabel}
-                    </Text>
+                    <Text style={styles.bookingSmallLabel}>Site SMEIA</Text>
                     <Text style={styles.bookingWorkshopName}>
-                      {workshop.name}
+                      {showroom.name}
                     </Text>
+                    {location ? (
+                      <Text style={styles.bookingSectionText}>{location}</Text>
+                    ) : null}
                   </View>
                 </Pressable>
               );
@@ -2995,12 +2948,12 @@ function AiBookingPanel({
           </View>
         ) : (
           <Text style={styles.bookingEmptyText}>
-            Aucun atelier réservable n’est disponible pour cette orientation.
+            Aucun site SMEIA n’est disponible.
           </Text>
         )}
       </View>
 
-      {selectedWorkshopId !== null &&
+      {selectedShowroomId !== null &&
       availabilityView === 'suggestions' &&
       !showDayPicker ? (
         <View
@@ -3391,7 +3344,7 @@ function AiBookingPanel({
           ) : (
             <Text style={styles.bookingEmptyText}>
               Aucun créneau disponible pour cette préférence. Essayez une autre
-              date ou un autre atelier.
+              date ou un autre site.
             </Text>
           )}
 

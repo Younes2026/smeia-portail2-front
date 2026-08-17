@@ -44,7 +44,11 @@ export type AiDiagnosticDrivingAdvice =
 export type AiDiagnosticConfidence = 'low' | 'medium' | 'high';
 
 export type AiDiagnosticServiceTypeId = 2 | 3 | 4 | 5 | 6 | 7 | 8;
-export type AiDiagnosticWorkshopId = 1 | 2 | 3 | 4;
+export type AiBookingWorkshopType =
+  | 'diagnostic'
+  | 'mecanique'
+  | 'carrosserie'
+  | 'peinture';
 
 export type AiDiagnosticImageAnalysis = {
   image_provided: boolean;
@@ -69,7 +73,7 @@ export type AiDiagnosticResult = {
   driving_advice: AiDiagnosticDrivingAdvice;
   safety_message: string | null;
   suggested_service_type_id: AiDiagnosticServiceTypeId | null;
-  suggested_workshop_ids: AiDiagnosticWorkshopId[];
+  suggested_workshop_types: AiBookingWorkshopType[];
   questions: AiDiagnosticQuestion[];
   client_message: string;
   sav_notes: string;

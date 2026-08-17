@@ -1,4 +1,5 @@
 import { HttpError } from '@/core/api/http-client';
+import type { AiBookingWorkshopType } from '@/core/api/ai-diagnostics.api';
 
 export const AI_BOOKING_TIME_ZONE = 'Africa/Casablanca';
 export const AI_BOOKING_WINDOW_DAYS = 30;
@@ -23,7 +24,7 @@ const bookingErrorMessages: Readonly<Record<string, string>> = {
     'La réservation est temporairement indisponible.',
   DIRECTUS_TIMEOUT: 'Le service met trop de temps à répondre.',
   BOOKING_AVAILABILITY_NOT_FOUND:
-    'Aucun créneau disponible pour cette préférence. Essayez une autre date ou un autre atelier.',
+    'Aucun créneau disponible pour cette préférence. Essayez une autre date ou un autre site.',
 };
 
 function getCasablancaDateParts(date: Date) {
@@ -83,19 +84,34 @@ export function isValidBookingDate(
   return isCalendarDate && value >= minimumDate && value <= maximumDate;
 }
 
-export function getCompatibleWorkshopIds(
+export const AI_BOOKING_WORKSHOP_TYPE_LABELS: Readonly<
+  Record<AiBookingWorkshopType, string>
+> = {
+  diagnostic: 'Diagnostic',
+  mecanique: 'Mécanique & diagnostic',
+  carrosserie: 'Carrosserie',
+  peinture: 'Peinture',
+};
+
+export function getCompatibleWorkshopTypes(
   qualificationCode: string | null | undefined
-): readonly number[] {
+): readonly AiBookingWorkshopType[] {
   switch (qualificationCode?.trim()) {
     case 'MEC-DIAG B':
-      return [1, 2];
+      return ['diagnostic', 'mecanique'];
     case 'CAR':
-      return [3];
+      return ['carrosserie'];
     case 'PEINT':
-      return [4];
+      return ['peinture'];
     default:
       return [];
   }
+}
+
+export function getWorkshopTypeLabel(
+  workshopType: AiBookingWorkshopType
+): string {
+  return AI_BOOKING_WORKSHOP_TYPE_LABELS[workshopType];
 }
 
 export function formatBookingDate(value: string): string {

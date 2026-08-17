@@ -1,6 +1,6 @@
 import type {
+  AiBookingWorkshopType,
   AiDiagnosticServiceTypeId,
-  AiDiagnosticWorkshopId,
 } from '@/core/api/ai-diagnostics.api';
 import { httpClient } from '@/core/api/http-client';
 
@@ -10,12 +10,11 @@ export type AiBookingResultMode = 'suggestions' | 'day_slots';
 export type SearchAiAppointmentAvailabilityInput = {
   vehicle_id: number;
   service_type_id: AiDiagnosticServiceTypeId;
-  workshop_ids:
-    | [AiDiagnosticWorkshopId]
-    | [AiDiagnosticWorkshopId, AiDiagnosticWorkshopId];
+  showroom_id: number;
+  workshop_types: AiBookingWorkshopType[];
   preferred_date: string | null;
   preferred_period: AiBookingPreferredPeriod;
-  result_mode?: AiBookingResultMode;
+  result_mode: AiBookingResultMode;
 };
 
 export type AiBookingShowroom = {
@@ -33,7 +32,7 @@ export type AiBookingAvailabilityOption = {
     id: AiDiagnosticServiceTypeId;
     name: string;
   };
-  workshop_id: AiDiagnosticWorkshopId;
+  workshop_id: number;
   workshop_name: string;
   showroom: AiBookingShowroom;
   requested_date: string;
@@ -70,7 +69,7 @@ export type AiBookingConfirmationResult = {
     name: string;
   };
   workshop: {
-    id: AiDiagnosticWorkshopId;
+    id: number;
     name: string;
   };
   showroom: AiBookingShowroom;

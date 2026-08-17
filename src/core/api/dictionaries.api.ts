@@ -18,6 +18,8 @@ export type Workshop = {
 export type Showroom = {
   id: number;
   name: string;
+  city: string | null;
+  address: string | null;
 };
 
 export const DICTIONARY_STALE_TIME = 1000 * 60 * 60 * 24;
@@ -40,6 +42,8 @@ export const dictionariesApi = {
   },
 
   getShowrooms: () => {
-    return httpClient.get<Showroom[]>('/items/showrooms');
+    return httpClient.get<Showroom[]>(
+      '/items/showrooms?fields=id,name,city,address&sort=id'
+    );
   },
 };
