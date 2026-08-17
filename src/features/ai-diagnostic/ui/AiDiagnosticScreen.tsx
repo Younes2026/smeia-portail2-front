@@ -441,9 +441,15 @@ const bookingPeriodOptions: ReadonlyArray<{
 export function AiDiagnosticScreen() {
   const searchParams = useLocalSearchParams<{
     mode?: string | string[];
+    preparation?: string | string[];
     source?: string | string[];
   }>();
   const isBookingMode = getSingleSearchParam(searchParams.mode) === 'booking';
+  const requestedBookingPreparation =
+    isBookingMode &&
+    getSingleSearchParam(searchParams.preparation) === 'manual'
+      ? 'manual'
+      : null;
   const bookingSource =
     getSingleSearchParam(searchParams.source) === 'appointments'
       ? 'appointments'
@@ -475,7 +481,7 @@ export function AiDiagnosticScreen() {
   );
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [bookingPreparation, setBookingPreparation] =
-    useState<BookingPreparationChoice | null>(null);
+    useState<BookingPreparationChoice | null>(requestedBookingPreparation);
   const [bookingRequested, setBookingRequested] = useState(false);
   const vehiclesQuery = useVehicles();
   const serviceTypesQuery = useServiceTypes();
