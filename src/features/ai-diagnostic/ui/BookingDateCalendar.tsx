@@ -24,10 +24,13 @@ type CalendarDay = {
 export type BookingDateCalendarProps = {
   compact: boolean;
   disabled?: boolean;
+  disableWeekends?: boolean;
   maximumDate: string;
   minimumDate: string;
   onSelect: (isoDate: string) => void;
   selectedDate: string | null;
+  unavailableDates?: readonly string[];
+  variant?: 'classic' | 'ai';
 };
 
 function parseIsoDate(value: string): DateParts | null {
@@ -149,11 +152,15 @@ function getCalendarWeeks(days: CalendarDay[]): CalendarDay[][] {
 export function BookingDateCalendar({
   compact,
   disabled = false,
+  disableWeekends = false,
   maximumDate,
   minimumDate,
   onSelect,
   selectedDate,
+  unavailableDates = [],
+  variant = 'ai',
 }: BookingDateCalendarProps) {
+  const styles = variant === 'classic' ? classicStyles : aiStyles;
   const minimumDateParts = useMemo(
     () => parseIsoDate(minimumDate) ?? { year: 1970, month: 1, day: 1 },
     [minimumDate]
@@ -165,6 +172,10 @@ export function BookingDateCalendar({
   const maximumDateParts = useMemo(
     () => parseIsoDate(maximumDate) ?? minimumDateParts,
     [maximumDate, minimumDateParts]
+  );
+  const unavailableDateSet = useMemo(
+    () => new Set(unavailableDates),
+    [unavailableDates]
   );
   const [visibleMonth, setVisibleMonth] = useState<MonthParts>(() =>
     toMonthParts(selectedDateParts ?? minimumDateParts)
@@ -183,6 +194,10 @@ export function BookingDateCalendar({
     !disabled && getMonthIndex(visibleMonth) > minimumMonthIndex;
   const canGoToNextMonth =
     !disabled && getMonthIndex(visibleMonth) < maximumMonthIndex;
+  const minimumDayIndex = toUtcDate(minimumDateParts).getUTCDay();
+  const minimumDateIsUnavailable =
+    unavailableDateSet.has(minimumDate) ||
+    (disableWeekends && (minimumDayIndex === 0 || minimumDayIndex === 6));
 
   useEffect(() => {
     const nextMonth = toMonthParts(selectedDateParts ?? minimumDateParts);
@@ -218,7 +233,7 @@ export function BookingDateCalendar({
   };
 
   const handleToday = () => {
-    if (disabled) {
+    if (disabled || minimumDateIsUnavailable) {
       return;
     }
 
@@ -290,8 +305,17 @@ export function BookingDateCalendar({
               const isAfterMaximum = isoDate > maximumDate;
               const isSelected = isoDate === selectedDate;
               const isToday = isoDate === minimumDate;
+              const dayIndex = toUtcDate(date).getUTCDay();
+              const isWeekend =
+                disableWeekends && (dayIndex === 0 || dayIndex === 6);
+              const isKnownUnavailable = unavailableDateSet.has(isoDate);
               const isDayDisabled =
-                disabled || !isCurrentMonth || isPast || isAfterMaximum;
+                disabled ||
+                !isCurrentMonth ||
+                isPast ||
+                isAfterMaximum ||
+                isWeekend ||
+                isKnownUnavailable;
 
               return (
                 <Pressable
@@ -318,6 +342,8 @@ export function BookingDateCalendar({
                     isAfterMaximum && isCurrentMonth && styles.pastDayCell,
                     isToday && isCurrentMonth && styles.todayCell,
                     isSelected && styles.selectedDayCell,
+                    (isWeekend || isKnownUnavailable) &&
+                      styles.unavailableDayCell,
                     hovered && !isDayDisabled && !isSelected &&
                       styles.dayCellHovered,
                     pressed && !isDayDisabled && styles.pressed,
@@ -332,6 +358,8 @@ export function BookingDateCalendar({
                       isPast && isCurrentMonth && styles.pastDayText,
                       isAfterMaximum && isCurrentMonth && styles.pastDayText,
                       isSelected && styles.selectedDayText,
+                      (isWeekend || isKnownUnavailable) &&
+                        styles.unavailableDayText,
                     ]}
                   >
                     {date.day}
@@ -352,14 +380,15 @@ export function BookingDateCalendar({
         <Pressable
           accessibilityLabel="Sélectionner la date d’aujourd’hui"
           accessibilityRole="button"
-          accessibilityState={{ disabled }}
-          disabled={disabled}
+          accessibilityState={{ disabled: disabled || minimumDateIsUnavailable }}
+          disabled={disabled || minimumDateIsUnavailable}
           onPress={handleToday}
           style={({ hovered, pressed }) => [
             styles.todayAction,
-            hovered && !disabled && styles.todayActionHovered,
-            pressed && !disabled && styles.pressed,
-            disabled && styles.disabled,
+            hovered && !disabled && !minimumDateIsUnavailable &&
+              styles.todayActionHovered,
+            pressed && !disabled && !minimumDateIsUnavailable && styles.pressed,
+            (disabled || minimumDateIsUnavailable) && styles.disabled,
           ]}
         >
           <Text style={styles.todayActionText}>Aujourd’hui</Text>
@@ -369,7 +398,7 @@ export function BookingDateCalendar({
   );
 }
 
-const styles = StyleSheet.create({
+const aiStyles = StyleSheet.create({
   container: {
     width: '100%',
     maxWidth: 620,
@@ -485,6 +514,11 @@ const styles = StyleSheet.create({
   pastDayCell: {
     backgroundColor: 'rgba(3, 22, 37, 0.5)',
   },
+  unavailableDayCell: {
+    borderColor: 'rgba(83, 108, 124, 0.18)',
+    backgroundColor: 'rgba(3, 22, 37, 0.5)',
+    opacity: 0.46,
+  },
   outsideMonthCell: {
     borderColor: 'transparent',
     backgroundColor: 'transparent',
@@ -503,6 +537,9 @@ const styles = StyleSheet.create({
     fontWeight: typography.fontWeight.bold,
   },
   pastDayText: {
+    color: '#557182',
+  },
+  unavailableDayText: {
     color: '#557182',
   },
   outsideMonthText: {
@@ -548,4 +585,91 @@ const styles = StyleSheet.create({
   disabled: {
     opacity: 0.4,
   },
+  classicContainer: {
+    borderColor: '#D8E2F0',
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#15294D',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.07,
+    shadowRadius: 16,
+    elevation: 2,
+  },
+  classicPrimaryText: {
+    color: '#15294D',
+  },
+  classicSecondaryText: {
+    color: '#5A6470',
+  },
+  classicAccentText: {
+    color: '#2F5FA6',
+  },
+  classicControl: {
+    borderColor: '#C8D5E6',
+    backgroundColor: '#FFFFFF',
+  },
+  classicControlHovered: {
+    borderColor: '#7FA5D4',
+    backgroundColor: '#F4F8FD',
+  },
+  classicDay: {
+    borderColor: '#E1E8F0',
+    backgroundColor: '#F8FAFC',
+  },
+  classicDaySelected: {
+    borderColor: '#7FA5D4',
+    backgroundColor: '#E7F0FB',
+    shadowColor: '#2F5FA6',
+    shadowOpacity: 0.1,
+  },
+  classicDayUnavailable: {
+    backgroundColor: '#F2F4F7',
+  },
+  classicDivider: {
+    borderTopColor: '#E3EAF2',
+  },
 });
+
+const classicStyleLayers = {
+  ...aiStyles,
+  container: [aiStyles.container, aiStyles.classicContainer],
+  monthTitle: [aiStyles.monthTitle, aiStyles.classicPrimaryText],
+  navigationButton: [aiStyles.navigationButton, aiStyles.classicControl],
+  navigationButtonHovered: [
+    aiStyles.navigationButtonHovered,
+    aiStyles.classicControlHovered,
+  ],
+  navigationButtonText: [
+    aiStyles.navigationButtonText,
+    aiStyles.classicAccentText,
+  ],
+  weekDay: [aiStyles.weekDay, aiStyles.classicSecondaryText],
+  dayCell: [aiStyles.dayCell, aiStyles.classicDay],
+  dayCellHovered: [aiStyles.dayCellHovered, aiStyles.classicControlHovered],
+  todayCell: [aiStyles.todayCell, aiStyles.classicControlHovered],
+  selectedDayCell: [aiStyles.selectedDayCell, aiStyles.classicDaySelected],
+  pastDayCell: [aiStyles.pastDayCell, aiStyles.classicDayUnavailable],
+  unavailableDayCell: [
+    aiStyles.unavailableDayCell,
+    aiStyles.classicDayUnavailable,
+  ],
+  dayText: [aiStyles.dayText, aiStyles.classicPrimaryText],
+  selectedDayText: [aiStyles.selectedDayText, aiStyles.classicAccentText],
+  pastDayText: [aiStyles.pastDayText, aiStyles.classicSecondaryText],
+  unavailableDayText: [
+    aiStyles.unavailableDayText,
+    aiStyles.classicSecondaryText,
+  ],
+  outsideMonthText: [aiStyles.outsideMonthText, aiStyles.classicSecondaryText],
+  footer: [aiStyles.footer, aiStyles.classicDivider],
+  selectedDateText: [aiStyles.selectedDateText, aiStyles.classicSecondaryText],
+  todayAction: [aiStyles.todayAction, aiStyles.classicControl],
+  todayActionHovered: [aiStyles.todayActionHovered, aiStyles.classicControlHovered],
+  todayActionText: [aiStyles.todayActionText, aiStyles.classicAccentText],
+};
+
+const classicStyles = Object.fromEntries(
+  Object.entries(classicStyleLayers).map(([name, value]) => [
+    name,
+    StyleSheet.flatten(value as object),
+  ])
+) as unknown as typeof aiStyles;

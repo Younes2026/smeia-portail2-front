@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ComponentProps } from 'react';
 import { Image as ExpoImage } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { uuid as expoUuid } from 'expo-modules-core';
 import { Link, useLocalSearchParams } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import {
   Image,
   Pressable,
@@ -21,6 +23,7 @@ import { ClientPortalLayout } from '@/components/layout/ClientPortalLayout';
 import type {
   AiBookingAvailabilityOption,
   AiBookingAvailabilityResult,
+  AiBookingCalendarResult,
   AiBookingConfirmationResult,
   AiBookingPreferredPeriod,
   AiBookingResultMode,
@@ -36,7 +39,7 @@ import type {
   AiDiagnosticResult,
   AiDiagnosticServiceTypeId,
 } from '@/core/api/ai-diagnostics.api';
-import type { DictionaryItem } from '@/core/api/dictionaries.api';
+import type { DictionaryItem, Showroom } from '@/core/api/dictionaries.api';
 import { HttpError } from '@/core/api/http-client';
 import {
   useServiceTypes,
@@ -47,7 +50,10 @@ import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
 import { useAnalyzeAiDiagnostic } from '@/features/ai-diagnostic/hooks/useAnalyzeAiDiagnostic';
 import { useConfirmAiAppointment } from '@/features/ai-diagnostic/hooks/useConfirmAiAppointment';
-import { useSearchAiAppointmentAvailability } from '@/features/ai-diagnostic/hooks/useSearchAiAppointmentAvailability';
+import {
+  useSearchAiAppointmentAvailability,
+  useSearchAiAppointmentCalendar,
+} from '@/features/ai-diagnostic/hooks/useSearchAiAppointmentAvailability';
 import {
   AI_BOOKING_TIME_ZONE,
   formatBookingDate,
@@ -69,6 +75,7 @@ import {
   SecureAnalysisVisual,
 } from '@/features/ai-diagnostic/ui/AiDiagnosticVisuals';
 import { useVehicles } from '@/features/vehicles/hooks/useVehicles';
+import { getBrandLogo } from '@/features/vehicles/model/brand-logo';
 import type { VehicleListItem } from '@/features/vehicles/model/vehicle.types';
 import { useAuthStore } from '@/store/auth.store';
 
@@ -219,6 +226,24 @@ function getVehicleMeta(vehicle: VehicleListItem): string {
     .join(' · ');
 }
 
+function isWeekendBookingDate(value: string): boolean {
+  const date = new Date(`${value}T12:00:00.000Z`);
+
+  if (!Number.isFinite(date.getTime())) {
+    return false;
+  }
+
+  const day = date.getUTCDay();
+
+  return day === 0 || day === 6;
+}
+
+function addBookingDateDays(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 function getQuestionKey(question: AiDiagnosticQuestion, index: number): string {
   return `${question.id}:${index}`;
 }
@@ -337,6 +362,10 @@ function createSecureIdempotencyKey(): string | null {
 
 type BookingDateMode = 'earliest' | 'date';
 type BookingAvailabilityView = 'suggestions' | 'day_slots';
+type ClassicAvailabilityErrorKind = 'rate_limit' | 'request';
+
+const CLASSIC_DAY_SLOTS_DEBOUNCE_MS = 180;
+const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 5;
 
 type BookingIdempotencyAttempt = {
   idempotencyKey: string;
@@ -345,6 +374,7 @@ type BookingIdempotencyAttempt = {
 };
 
 type AiBookingContext = {
+  needLabel?: string;
   problemSummary: string;
   serviceTypeId: AiDiagnosticServiceTypeId;
   serviceTypeName: string;
@@ -352,12 +382,90 @@ type AiBookingContext = {
   workshopSelectionDescription: string;
 };
 
-type BookingContactDetails = {
+export type BookingContactDetails = {
   name: string;
   email: string | null;
   phone: string | null;
   address: string | null;
 };
+
+export type SecureManualBookingVariant = 'classic' | 'ai';
+
+type ClassicBookingStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+const CLASSIC_BOOKING_STEPS: ReadonlyArray<{
+  description: string;
+  icon: ComponentProps<typeof SymbolView>['name'];
+  label: string;
+}> = [
+  {
+    label: 'Véhicule',
+    description: 'Choisissez le véhicule concerné.',
+    icon: { ios: 'car', android: 'directions_car', web: 'directions_car' },
+  },
+  {
+    label: 'Coordonnées',
+    description: 'Vérifiez les coordonnées associées à votre compte.',
+    icon: { ios: 'person', android: 'person', web: 'person' },
+  },
+  {
+    label: 'Site SMEIA',
+    description: 'Choisissez votre site SMEIA.',
+    icon: { ios: 'mappin', android: 'location_on', web: 'location_on' },
+  },
+  {
+    label: 'Atelier',
+    description: 'Choisissez le type logique adapté à votre besoin.',
+    icon: { ios: 'wrench', android: 'build', web: 'build' },
+  },
+  {
+    label: 'Prestation',
+    description: 'Vérifiez la prestation SMEIA déterminée automatiquement.',
+    icon: { ios: 'list.bullet', android: 'list', web: 'list' },
+  },
+  {
+    label: 'Date et heure',
+    description: 'Choisissez un créneau réel disponible.',
+    icon: { ios: 'calendar', android: 'event', web: 'event' },
+  },
+  {
+    label: 'Confirmation',
+    description: 'Vérifiez puis confirmez votre demande sécurisée.',
+    icon: { ios: 'checkmark', android: 'check', web: 'check' },
+  },
+];
+
+const CLASSIC_WORKSHOP_TYPES: ReadonlyArray<{
+  description: string;
+  icon: ComponentProps<typeof SymbolView>['name'];
+  label: string;
+  value: ManualBookingNeed;
+}> = [
+  {
+    value: 'diagnostic',
+    label: 'Diagnostic',
+    description: 'Diagnostic du véhicule',
+    icon: { ios: 'gauge.with.dots.needle.67percent', android: 'speed', web: 'speed' },
+  },
+  {
+    value: 'mecanique',
+    label: 'Mécanique',
+    description: 'Mécanique & diagnostic',
+    icon: { ios: 'wrench', android: 'build', web: 'build' },
+  },
+  {
+    value: 'carrosserie',
+    label: 'Carrosserie',
+    description: 'Carrosserie',
+    icon: { ios: 'car.side', android: 'directions_car', web: 'directions_car' },
+  },
+  {
+    value: 'peinture',
+    label: 'Peinture',
+    description: 'Peinture',
+    icon: { ios: 'paintbrush', android: 'format_paint', web: 'format_paint' },
+  },
+];
 
 const MANUAL_BOOKING_NEEDS: ReadonlyArray<{
   label: string;
@@ -441,15 +549,9 @@ const bookingPeriodOptions: ReadonlyArray<{
 export function AiDiagnosticScreen() {
   const searchParams = useLocalSearchParams<{
     mode?: string | string[];
-    preparation?: string | string[];
     source?: string | string[];
   }>();
   const isBookingMode = getSingleSearchParam(searchParams.mode) === 'booking';
-  const requestedBookingPreparation =
-    isBookingMode &&
-    getSingleSearchParam(searchParams.preparation) === 'manual'
-      ? 'manual'
-      : null;
   const bookingSource =
     getSingleSearchParam(searchParams.source) === 'appointments'
       ? 'appointments'
@@ -481,7 +583,7 @@ export function AiDiagnosticScreen() {
   );
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [bookingPreparation, setBookingPreparation] =
-    useState<BookingPreparationChoice | null>(requestedBookingPreparation);
+    useState<BookingPreparationChoice | null>(null);
   const [bookingRequested, setBookingRequested] = useState(false);
   const vehiclesQuery = useVehicles();
   const serviceTypesQuery = useServiceTypes();
@@ -870,13 +972,14 @@ export function AiDiagnosticScreen() {
             }}
           />
         ) : isBookingMode && bookingPreparation === 'manual' ? (
-          <ManualBookingJourney
+          <SecureManualBookingJourney
             contacts={bookingContacts}
             isNarrow={isNarrow}
             isServiceTypesError={serviceTypesQuery.isError}
             isServiceTypesLoading={serviceTypesQuery.isLoading}
             onChangeJourney={changeBookingJourney}
             serviceTypes={serviceTypesQuery.data ?? []}
+            variant="ai"
             vehicles={vehicles}
           />
         ) : (
@@ -1077,13 +1180,14 @@ function PreparationCard({
   );
 }
 
-function ManualBookingJourney({
+export function SecureManualBookingJourney({
   contacts,
   isNarrow,
   isServiceTypesError,
   isServiceTypesLoading,
   onChangeJourney,
   serviceTypes,
+  variant,
   vehicles,
 }: {
   contacts: BookingContactDetails;
@@ -1092,18 +1196,36 @@ function ManualBookingJourney({
   isServiceTypesLoading: boolean;
   onChangeJourney: () => void;
   serviceTypes: readonly DictionaryItem[];
+  variant: SecureManualBookingVariant;
   vehicles: readonly VehicleListItem[];
 }) {
+  const styles = getSecureManualBookingStyles(variant);
+  const isClassic = variant === 'classic';
+  const showroomsQuery = useShowrooms();
+  const calendarMutation = useSearchAiAppointmentCalendar();
+  const calendarRequestIdRef = useRef(0);
+  const calendarInFlightKeyRef = useRef<string | null>(null);
+  const calendarCacheRef = useRef(new Map<string, AiBookingCalendarResult>());
+  const [classicStep, setClassicStep] = useState<ClassicBookingStep>(1);
   const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
   const [selectedNeed, setSelectedNeed] = useState<ManualBookingNeed | null>(null);
+  const [selectedShowroomId, setSelectedShowroomId] =
+    useState<number | null>(null);
   const [quoteChoice, setQuoteChoice] =
     useState<ManualQuoteChoice | null>(null);
   const [precision, setPrecision] = useState('');
   const [submittedContext, setSubmittedContext] =
     useState<AiBookingContext | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [classicSelectedOption, setClassicSelectedOption] =
+    useState<AiBookingAvailabilityOption | null>(null);
+  const [classicCalendar, setClassicCalendar] =
+    useState<AiBookingCalendarResult | null>(null);
+  const showrooms = showroomsQuery.data ?? [];
   const selectedVehicle =
     vehicles.find((vehicle) => vehicle.id === selectedVehicleId) ?? null;
+  const selectedShowroom =
+    showrooms.find((showroom) => showroom.id === selectedShowroomId) ?? null;
   const expectedServiceTypeId = getManualServiceTypeId(
     selectedNeed,
     quoteChoice
@@ -1116,6 +1238,14 @@ function ManualBookingJourney({
   const selectedNeedLabel =
     MANUAL_BOOKING_NEEDS.find((need) => need.value === selectedNeed)?.label ??
     null;
+  const selectedClassicWorkshopLabel =
+    CLASSIC_WORKSHOP_TYPES.find((workshop) => workshop.value === selectedNeed)
+      ?.label ?? null;
+  const classicWorkshopTypeIsSelected =
+    selectedNeed !== null &&
+    CLASSIC_WORKSHOP_TYPES.some(
+      (workshop) => workshop.value === selectedNeed
+    );
   const compatibleWorkshopTypes = useMemo(
     () =>
       getCompatibleWorkshopTypes(selectedServiceType?.qualification_code),
@@ -1139,10 +1269,84 @@ function ManualBookingJourney({
     !catalogIsPending &&
     !catalogHasError &&
     selectedWorkshopTypes.length === 0;
+  const canContinueNeedStep =
+    selectedNeed !== null &&
+    (!requiresQuoteChoice || quoteChoice !== null) &&
+    selectedServiceType !== null &&
+    selectedWorkshopTypes.length > 0 &&
+    (precision.length === 0 || precision.trim().length > 0) &&
+    precision.length <= 800 &&
+    !catalogIsPending &&
+    !catalogHasError;
 
   const invalidateBooking = () => {
+    calendarRequestIdRef.current += 1;
+    calendarInFlightKeyRef.current = null;
+    calendarCacheRef.current.clear();
+    calendarMutation.reset();
+    setClassicCalendar(null);
     setSubmittedContext(null);
+    setClassicSelectedOption(null);
     setFormError(null);
+  };
+
+  const loadClassicCalendar = (bookingContext: AiBookingContext) => {
+    if (selectedVehicle === null || selectedShowroomId === null) {
+      return;
+    }
+
+    const cacheKey = [
+      selectedVehicle.id,
+      bookingContext.serviceTypeId,
+      selectedShowroomId,
+      bookingContext.workshopTypes.join(','),
+    ].join(':');
+    const cachedCalendar = calendarCacheRef.current.get(cacheKey);
+
+    if (cachedCalendar) {
+      calendarMutation.reset();
+      setClassicCalendar(cachedCalendar);
+      return;
+    }
+
+    if (calendarInFlightKeyRef.current === cacheKey) {
+      return;
+    }
+
+    const requestId = calendarRequestIdRef.current + 1;
+    calendarRequestIdRef.current = requestId;
+    calendarInFlightKeyRef.current = cacheKey;
+    calendarMutation.reset();
+    setClassicCalendar(null);
+    calendarMutation.mutate(
+      {
+        vehicle_id: selectedVehicle.id,
+        service_type_id: bookingContext.serviceTypeId,
+        showroom_id: selectedShowroomId,
+        workshop_types: [...bookingContext.workshopTypes],
+        preferred_date: null,
+        preferred_period: 'any',
+        result_mode: 'calendar',
+      },
+      {
+        onSuccess: (calendar) => {
+          if (requestId !== calendarRequestIdRef.current) {
+            return;
+          }
+
+          calendarCacheRef.current.set(cacheKey, calendar);
+          setClassicCalendar(calendar);
+        },
+        onSettled: () => {
+          if (
+            requestId === calendarRequestIdRef.current &&
+            calendarInFlightKeyRef.current === cacheKey
+          ) {
+            calendarInFlightKeyRef.current = null;
+          }
+        },
+      }
+    );
   };
 
   const handleContinue = () => {
@@ -1153,6 +1357,11 @@ function ManualBookingJourney({
 
     if (!selectedNeed) {
       setFormError('Sélectionnez votre besoin.');
+      return;
+    }
+
+    if (isClassic && !classicWorkshopTypeIsSelected) {
+      setFormError('Sélectionnez un type d’atelier disponible.');
       return;
     }
 
@@ -1197,62 +1406,70 @@ function ManualBookingJourney({
       return;
     }
 
-    setFormError(null);
-    setSubmittedContext({
+    const bookingContext: AiBookingContext = {
+      needLabel:
+        (isClassic ? selectedClassicWorkshopLabel : selectedNeedLabel) ??
+        undefined,
       problemSummary,
       serviceTypeId: expectedServiceTypeId,
       serviceTypeName: selectedServiceType.name,
       workshopTypes: selectedWorkshopTypes,
       workshopSelectionDescription:
         'Le site choisi sera utilisé pour résoudre l’atelier physique compatible.',
-    });
+    };
+
+    setFormError(null);
+    setSubmittedContext(bookingContext);
+
+    if (isClassic) {
+      setClassicStep(6);
+      loadClassicCalendar(bookingContext);
+    }
   };
 
-  return (
-    <View style={styles.manualJourney}>
-      <View style={[styles.mainPanel, styles.mainPanelFull, isNarrow && styles.panelNarrow]}>
-        <SectionIntro
-          kicker="RÉSERVATION SANS ANALYSE IA"
-          title="Préparez votre demande"
-          text="Renseignez votre besoin. La prestation et le type d’atelier sont déterminés selon les règles SMEIA."
-        />
+  const handleVehicleSelection = (vehicleId: number) => {
+    if (vehicleId === selectedVehicleId) {
+      return;
+    }
 
-        <View style={styles.formSection}>
-          <Text style={styles.bookingFieldLabel}>Véhicule obligatoire</Text>
-          {vehicles.length > 0 ? (
-            <View style={styles.optionGrid}>
-              {vehicles.map((vehicle) => (
-                <SelectableVehicleCard
-                  key={vehicle.id}
-                  active={vehicle.id === selectedVehicleId}
-                  disabled={false}
-                  vehicle={vehicle}
-                  onPress={() => {
-                    if (vehicle.id !== selectedVehicleId) {
-                      invalidateBooking();
-                      setSelectedVehicleId(vehicle.id);
-                      setSelectedNeed(null);
-                      setQuoteChoice(null);
-                      setPrecision('');
-                    }
-                  }}
-                />
-              ))}
-            </View>
-          ) : (
-            <EmptyPanel
-              title="Aucun véhicule trouvé"
-              text="Aucun véhicule n’est lié à votre profil client."
-            />
-          )}
-        </View>
+    invalidateBooking();
+    setSelectedVehicleId(vehicleId);
+    if (!isClassic) {
+      setSelectedNeed(null);
+      setQuoteChoice(null);
+      setPrecision('');
+    }
+  };
 
-        {selectedVehicle ? (
+  const handleClassicShowroomSelection = (showroomId: number) => {
+    if (showroomId === selectedShowroomId) {
+      return;
+    }
+
+    invalidateBooking();
+    setSelectedShowroomId(showroomId);
+  };
+
+  const handleNeedSelection = (need: ManualBookingNeed) => {
+    if (need === selectedNeed) {
+      return;
+    }
+
+    invalidateBooking();
+    setSelectedNeed(need);
+    setQuoteChoice(null);
+    setPrecision('');
+  };
+
+  const needAndServiceFields = (
+    <>
+      {selectedVehicle ? (
           <View style={styles.formSection}>
             <SectionIntro
               kicker="BESOIN"
               title="Quel est votre besoin ?"
               text="Choisissez la situation qui correspond à votre demande."
+              variant={variant}
             />
             <View style={styles.manualNeedGrid}>
               {MANUAL_BOOKING_NEEDS.map((need) => {
@@ -1264,12 +1481,7 @@ function ManualBookingJourney({
                     accessibilityRole="button"
                     accessibilityState={{ selected }}
                     onPress={() => {
-                      if (need.value !== selectedNeed) {
-                        invalidateBooking();
-                        setSelectedNeed(need.value);
-                        setQuoteChoice(null);
-                        setPrecision('');
-                      }
+                      handleNeedSelection(need.value);
                     }}
                     style={({ hovered, pressed }) => [
                       styles.manualNeedCard,
@@ -1309,6 +1521,7 @@ function ManualBookingJourney({
                   }
                 }}
                 selected={quoteChoice === 'without_quote'}
+                variant={variant}
               />
               <BookingChoiceButton
                 disabled={false}
@@ -1320,6 +1533,7 @@ function ManualBookingJourney({
                   }
                 }}
                 selected={quoteChoice === 'with_quote'}
+                variant={variant}
               />
             </View>
           </View>
@@ -1334,32 +1548,38 @@ function ManualBookingJourney({
               <ControlledErrorPanel
                 message="Les catalogues SMEIA sont temporairement indisponibles."
                 title="Réservation indisponible"
+                variant={variant}
               />
             ) : expectedServiceIsMissing ? (
               <ControlledErrorPanel
                 message="La prestation SMEIA attendue n’est pas disponible dans le catalogue chargé."
                 title="Configuration indisponible"
+                variant={variant}
               />
             ) : compatibleWorkshopTypeIsMissing ? (
               <ControlledErrorPanel
                 message="Aucun type d’atelier compatible n’est configuré pour cette prestation."
                 title="Configuration indisponible"
+                variant={variant}
               />
             ) : selectedServiceType && selectedNeedLabel ? (
               <View style={styles.manualSelectionSummary}>
                 <BookingSummaryItem
                   label="Besoin sélectionné"
                   value={selectedNeedLabel}
+                  variant={variant}
                 />
                 <BookingSummaryItem
                   label="Prestation SMEIA déterminée automatiquement"
                   value={selectedServiceType.name}
+                  variant={variant}
                 />
                 <BookingSummaryItem
                   label="Type d’atelier"
                   value={selectedWorkshopTypes
                     .map(getWorkshopTypeLabel)
                     .join(' • ')}
+                  variant={variant}
                 />
               </View>
             ) : null}
@@ -1394,8 +1614,402 @@ function ManualBookingJourney({
         ) : null}
 
         {formError ? (
-          <ControlledErrorPanel message={formError} title="Demande incomplète" />
+          <ControlledErrorPanel
+            message={formError}
+            title="Demande incomplète"
+            variant={variant}
+          />
         ) : null}
+    </>
+  );
+
+  if (isClassic) {
+    return (
+      <View style={styles.manualJourney}>
+        <ClassicBookingWizardProgress currentStep={classicStep} />
+        <View
+          style={[
+            styles.classicWizardWorkspace,
+            isNarrow && styles.classicWizardWorkspaceNarrow,
+          ]}
+        >
+          <View style={styles.classicWizardFormColumn}>
+            {classicStep <= 5 ? (
+              <View
+                style={[
+                  styles.classicWizardFormPanel,
+                  styles.classicCardSurface,
+                ]}
+              >
+                {classicStep === 1 ? (
+                  <View style={styles.classicWizardStepContent}>
+                    <SectionIntro
+                      kicker="Étape 1"
+                      title="Choisissez votre véhicule"
+                      text="Seuls les véhicules associés à votre compte client sont proposés."
+                      variant="classic"
+                    />
+                    {vehicles.length > 0 ? (
+                      <View style={styles.classicVehicleGrid}>
+                        {vehicles.map((vehicle) => (
+                          <ClassicVehicleChoice
+                            key={vehicle.id}
+                            active={vehicle.id === selectedVehicleId}
+                            onPress={() => {
+                              handleVehicleSelection(vehicle.id);
+                            }}
+                            vehicle={vehicle}
+                          />
+                        ))}
+                      </View>
+                    ) : (
+                      <EmptyPanel
+                        title="Aucun véhicule enregistré"
+                        text="Aucun véhicule n’est actuellement lié à votre profil client."
+                        variant="classic"
+                      />
+                    )}
+                  </View>
+                ) : null}
+
+                {classicStep === 2 ? (
+                  <View style={styles.classicWizardStepContent}>
+                    <SectionIntro
+                      kicker="Étape 2"
+                      title="Vérifiez vos coordonnées"
+                      text="Ces informations proviennent de votre compte client et servent au suivi de votre demande."
+                      variant="classic"
+                    />
+                    <ClassicContactDetails
+                      contacts={contacts}
+                      selectedVehicle={selectedVehicle}
+                    />
+                  </View>
+                ) : null}
+
+                {classicStep === 3 ? (
+                  <View style={styles.classicWizardStepContent}>
+                    <SectionIntro
+                      kicker="Étape 3"
+                      title="Choisissez votre site SMEIA"
+                      text="Sélectionnez le site dans lequel vous souhaitez planifier votre visite."
+                      variant="classic"
+                    />
+                    <Text style={styles.classicFieldLabel}>Site SMEIA</Text>
+                    {showroomsQuery.isLoading ? (
+                      <LoadingState message="Chargement des sites SMEIA…" />
+                    ) : showroomsQuery.isError ? (
+                      <ControlledErrorPanel
+                        message="Les sites SMEIA sont temporairement indisponibles."
+                        title="Réservation indisponible"
+                        variant="classic"
+                      />
+                    ) : showrooms.length > 0 ? (
+                      <View style={styles.classicChoiceList}>
+                        {showrooms.map((showroom) => (
+                          <ClassicCompactChoice
+                            key={showroom.id}
+                            active={selectedShowroomId === showroom.id}
+                            description={[showroom.city, showroom.address]
+                              .map((value) => value?.trim())
+                              .filter((value): value is string => Boolean(value))
+                              .join(' • ')}
+                            icon={{ ios: 'mappin', android: 'location_on', web: 'location_on' }}
+                            label={showroom.name}
+                            onPress={() => {
+                              handleClassicShowroomSelection(showroom.id);
+                            }}
+                          />
+                        ))}
+                      </View>
+                    ) : (
+                      <EmptyPanel
+                        title="Aucun site SMEIA"
+                        text="Aucun site n’est actuellement disponible."
+                        variant="classic"
+                      />
+                    )}
+
+                  </View>
+                ) : null}
+
+                {classicStep === 4 ? (
+                  <View style={styles.classicWizardStepContent}>
+                    <SectionIntro
+                      kicker="Étape 4"
+                      title="Choisissez votre atelier"
+                      text="Sélectionnez un type logique. L’atelier physique sera résolu par le backend pour le site choisi."
+                      variant="classic"
+                    />
+                    <View style={styles.classicChoiceList}>
+                      {CLASSIC_WORKSHOP_TYPES.map((workshop) => (
+                        <ClassicCompactChoice
+                          key={workshop.value}
+                          active={selectedNeed === workshop.value}
+                          description={workshop.description}
+                          icon={workshop.icon}
+                          label={workshop.label}
+                          onPress={() => {
+                            handleNeedSelection(workshop.value);
+                          }}
+                        />
+                      ))}
+                    </View>
+                    <View style={styles.classicAutomaticNotice}>
+                      <SymbolView
+                        name={{ ios: 'lock.shield', android: 'lock', web: 'lock' }}
+                        size={18}
+                        tintColor="#2F5FA6"
+                      />
+                      <Text style={styles.classicAutomaticNoticeText}>
+                        Aucun ID physique d’atelier n’est choisi ou envoyé par ce parcours.
+                      </Text>
+                    </View>
+                  </View>
+                ) : null}
+
+                {classicStep === 5 ? (
+                  <View style={styles.classicWizardStepContent}>
+                    <SectionIntro
+                      kicker="Étape 5"
+                      title="Votre prestation SMEIA"
+                      text="La prestation est déterminée automatiquement à partir du type d’atelier et de votre situation."
+                      variant="classic"
+                    />
+
+                    {requiresQuoteChoice ? (
+                      <View style={styles.formSection}>
+                        <Text style={styles.classicFieldLabel}>
+                          Avez-vous déjà un devis SMEIA validé pour cette intervention ?
+                        </Text>
+                        <View style={styles.bookingModeRow}>
+                          <BookingChoiceButton
+                            disabled={false}
+                            label="Non, je souhaite faire établir un devis"
+                            onPress={() => {
+                              if (quoteChoice !== 'without_quote') {
+                                invalidateBooking();
+                                setQuoteChoice('without_quote');
+                              }
+                            }}
+                            selected={quoteChoice === 'without_quote'}
+                            variant="classic"
+                          />
+                          <BookingChoiceButton
+                            disabled={false}
+                            label="Oui, j’ai déjà un devis SMEIA validé"
+                            onPress={() => {
+                              if (quoteChoice !== 'with_quote') {
+                                invalidateBooking();
+                                setQuoteChoice('with_quote');
+                              }
+                            }}
+                            selected={quoteChoice === 'with_quote'}
+                            variant="classic"
+                          />
+                        </View>
+                      </View>
+                    ) : null}
+
+                    {expectedServiceTypeId !== null ? (
+                      catalogIsPending ? (
+                        <LoadingState message="Chargement des prestations SMEIA…" />
+                      ) : catalogHasError ? (
+                        <ControlledErrorPanel
+                          message="Les catalogues SMEIA sont temporairement indisponibles."
+                          title="Réservation indisponible"
+                          variant="classic"
+                        />
+                      ) : expectedServiceIsMissing || compatibleWorkshopTypeIsMissing ? (
+                        <ControlledErrorPanel
+                          message="La prestation compatible n’est pas disponible dans le catalogue SMEIA."
+                          title="Configuration indisponible"
+                          variant="classic"
+                        />
+                      ) : selectedServiceType ? (
+                        <View
+                          style={[
+                            styles.classicAutomaticSelection,
+                            styles.classicCardSurface,
+                          ]}
+                        >
+                          <ClassicSummaryRow
+                            icon={{ ios: 'wrench', android: 'build', web: 'build' }}
+                            label="Atelier logique"
+                            value={selectedClassicWorkshopLabel ?? 'À sélectionner'}
+                          />
+                          <ClassicSummaryRow
+                            icon={{ ios: 'mappin', android: 'location_on', web: 'location_on' }}
+                            label="Site SMEIA"
+                            value={selectedShowroom?.name ?? 'À sélectionner'}
+                          />
+                          <ClassicSummaryRow
+                            icon={{ ios: 'list.bullet', android: 'list', web: 'list' }}
+                            label="Prestation déterminée automatiquement"
+                            value={selectedServiceType.name}
+                          />
+                        </View>
+                      ) : null
+                    ) : null}
+
+                    {selectedServiceType && selectedWorkshopTypes.length > 0 ? (
+                      <View style={styles.formSection}>
+                        <Text style={styles.classicFieldLabel}>
+                          Ajouter une précision — facultatif
+                        </Text>
+                        <TextInput
+                          accessibilityLabel="Ajouter une précision facultative"
+                          maxLength={800}
+                          multiline
+                          numberOfLines={5}
+                          onChangeText={(value) => {
+                            invalidateBooking();
+                            setPrecision(value);
+                          }}
+                          placeholder="Exemple : le voyant est apparu hier ou la rayure se trouve sur la porte avant."
+                          placeholderTextColor="#7892AA"
+                          style={[styles.input, styles.problemInput]}
+                          textAlignVertical="top"
+                          value={precision}
+                        />
+                        <View style={styles.inputMetaRow}>
+                          <Text style={styles.fieldHint}>Champ facultatif</Text>
+                          <Text style={styles.characterCount}>{precision.length}/800</Text>
+                        </View>
+                      </View>
+                    ) : null}
+
+                    {formError ? (
+                      <ControlledErrorPanel
+                        message={formError}
+                        title="Demande incomplète"
+                        variant="classic"
+                      />
+                    ) : null}
+                  </View>
+                ) : null}
+
+                <ClassicBookingWizardActions
+                  canContinue={
+                    classicStep === 1
+                      ? selectedVehicle !== null
+                      : classicStep === 2
+                        ? true
+                        : classicStep === 3
+                          ? selectedShowroomId !== null
+                          : classicStep === 4
+                            ? classicWorkshopTypeIsSelected
+                            : canContinueNeedStep
+                  }
+                  isPending={
+                    classicStep === 3
+                      ? showroomsQuery.isLoading
+                      : classicStep === 5 &&
+                        (catalogIsPending || calendarMutation.isPending)
+                  }
+                  onBack={() => {
+                    setFormError(null);
+                    if (classicStep === 1) {
+                      onChangeJourney();
+                    } else {
+                      setClassicStep(
+                        (classicStep - 1) as ClassicBookingStep
+                      );
+                    }
+                  }}
+                  onContinue={() => {
+                    setFormError(null);
+                    if (classicStep === 5) {
+                      handleContinue();
+                    } else {
+                      setClassicStep(
+                        (classicStep + 1) as ClassicBookingStep
+                      );
+                    }
+                  }}
+                />
+              </View>
+            ) : null}
+
+            {submittedContext && selectedVehicle && selectedShowroomId ? (
+              <AiBookingPanel
+                calendarAvailability={classicCalendar}
+                calendarError={calendarMutation.error}
+                calendarPending={calendarMutation.isPending}
+                classicStep={classicStep}
+                contacts={contacts}
+                context={submittedContext}
+                initialShowroomId={selectedShowroomId}
+                isNarrow={isNarrow}
+                onChangeJourney={onChangeJourney}
+                onClassicOptionChange={setClassicSelectedOption}
+                onClassicStepChange={setClassicStep}
+                onCalendarRetry={() => {
+                  loadClassicCalendar(submittedContext);
+                }}
+                selectedVehicle={selectedVehicle}
+                variant="classic"
+              />
+            ) : null}
+          </View>
+
+          <ClassicBookingSummary
+            contacts={contacts}
+            isCompact={isNarrow}
+            selectedOption={classicSelectedOption}
+            selectedServiceType={selectedServiceType}
+            selectedShowroom={selectedShowroom}
+            selectedVehicle={selectedVehicle}
+            workshopLabel={selectedClassicWorkshopLabel}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.manualJourney}>
+      <View
+        style={[
+          styles.mainPanel,
+          styles.mainPanelFull,
+          isNarrow && styles.panelNarrow,
+        ]}
+      >
+        <SectionIntro
+          kicker="RÉSERVATION SANS ANALYSE IA"
+          title="Préparez votre demande"
+          text="Renseignez votre besoin. La prestation et le type d’atelier sont déterminés selon les règles SMEIA."
+          variant="ai"
+        />
+
+        <View style={styles.formSection}>
+          <Text style={styles.bookingFieldLabel}>Véhicule obligatoire</Text>
+          {vehicles.length > 0 ? (
+            <View style={styles.optionGrid}>
+              {vehicles.map((vehicle) => (
+                <SelectableVehicleCard
+                  key={vehicle.id}
+                  active={vehicle.id === selectedVehicleId}
+                  disabled={false}
+                  onPress={() => {
+                    handleVehicleSelection(vehicle.id);
+                  }}
+                  vehicle={vehicle}
+                  variant="ai"
+                />
+              ))}
+            </View>
+          ) : (
+            <EmptyPanel
+              title="Aucun véhicule trouvé"
+              text="Aucun véhicule n’est lié à votre profil client."
+              variant="ai"
+            />
+          )}
+        </View>
+
+        {needAndServiceFields}
 
         {selectedServiceType && selectedWorkshopTypes.length > 0 ? (
           <Pressable
@@ -1417,7 +2031,11 @@ function ManualBookingJourney({
         ) : null}
 
         {!submittedContext ? (
-          <BookingResetButton disabled={false} onReset={onChangeJourney} />
+          <BookingResetButton
+            disabled={false}
+            onReset={onChangeJourney}
+            variant="ai"
+          />
         ) : null}
       </View>
 
@@ -1428,8 +2046,411 @@ function ManualBookingJourney({
           isNarrow={isNarrow}
           onChangeJourney={onChangeJourney}
           selectedVehicle={selectedVehicle}
+          variant="ai"
         />
       ) : null}
+    </View>
+  );
+}
+
+function cleanClassicValue(value?: string | null): string | null {
+  const trimmed = value?.trim() ?? '';
+
+  if (
+    trimmed.length === 0 ||
+    trimmed.toLocaleLowerCase('fr-FR').includes('non renseign') ||
+    trimmed.toLocaleLowerCase('fr-FR') === 'unknown'
+  ) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function getClassicVehicleRegistration(
+  vehicle: VehicleListItem | null
+): string | null {
+  return cleanClassicValue(vehicle?.registrationNumber);
+}
+
+function getClassicMaskedVin(vehicle: VehicleListItem): string | null {
+  const vin = cleanClassicValue(vehicle.vinValue ?? vehicle.vin);
+
+  if (!vin) {
+    return null;
+  }
+
+  return vin.length <= 6 ? vin : `••••••${vin.slice(-6)}`;
+}
+
+function ClassicVehicleChoice({
+  active,
+  onPress,
+  vehicle,
+}: {
+  active: boolean;
+  onPress: () => void;
+  vehicle: VehicleListItem;
+}) {
+  const logo = getBrandLogo(cleanClassicValue(vehicle.brandName));
+  const registration = getClassicVehicleRegistration(vehicle);
+  const year = vehicle.yearValue === null ? null : vehicle.year;
+  const mileage = vehicle.mileageValue === null ? null : vehicle.mileage;
+  const maskedVin = getClassicMaskedVin(vehicle);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.classicVehicleChoice,
+        styles.classicCardSurface,
+        active && styles.classicVehicleChoiceActive,
+        hovered && !active && styles.classicChoiceHovered,
+        pressed && styles.classicChoicePressed,
+      ]}
+    >
+      <View style={styles.classicVehicleChoiceTopline}>
+        <View
+          style={[
+            styles.classicVehicleLogoFrame,
+            logo &&
+              'needsLightSurface' in logo &&
+              logo.needsLightSurface &&
+              styles.classicVehicleLogoFrameLight,
+          ]}
+        >
+          {logo ? (
+            <ExpoImage
+              accessibilityLabel={`Logo ${logo.name}`}
+              contentFit="contain"
+              source={logo.source}
+              style={styles.classicVehicleLogo}
+            />
+          ) : (
+            <SymbolView
+              name={{ ios: 'car', android: 'directions_car', web: 'directions_car' }}
+              size={34}
+              tintColor="#8FB7E8"
+            />
+          )}
+        </View>
+        {active ? (
+          <View style={styles.classicSelectedCheck}>
+            <SymbolView
+              name={{ ios: 'checkmark', android: 'check', web: 'check' }}
+              size={14}
+              tintColor="#FFFFFF"
+            />
+          </View>
+        ) : null}
+      </View>
+      <Text style={styles.classicVehicleName}>
+        {getVehicleDisplayName(vehicle)}
+      </Text>
+      {registration ? (
+        <Text style={styles.classicVehicleRegistration}>{registration}</Text>
+      ) : null}
+      <View style={styles.classicVehicleFacts}>
+        {year ? <Text style={styles.classicVehicleFact}>{year}</Text> : null}
+        {mileage ? (
+          <Text style={styles.classicVehicleFact}>{mileage}</Text>
+        ) : null}
+      </View>
+      {maskedVin ? (
+        <Text style={styles.classicVehicleVin}>{maskedVin}</Text>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function ClassicContactDetails({
+  contacts,
+  selectedVehicle,
+}: {
+  contacts: BookingContactDetails;
+  selectedVehicle: VehicleListItem | null;
+}) {
+  return (
+    <>
+      <View style={styles.classicVerificationGrid}>
+        <View style={[styles.classicInfoPanel, styles.classicCardSurface]}>
+          <View style={styles.classicInfoPanelHeader}>
+            <View style={styles.classicInfoPanelIcon}>
+              <SymbolView
+                name={{ ios: 'person', android: 'person', web: 'person' }}
+                size={18}
+                tintColor="#2F5FA6"
+              />
+            </View>
+            <Text style={styles.classicInfoPanelTitle}>Coordonnées client</Text>
+          </View>
+          <ClassicInfoLine label="Nom" value={contacts.name} />
+          <ClassicInfoLine
+            label="E-mail"
+            value={contacts.email ?? 'Non renseigné'}
+          />
+          <ClassicInfoLine
+            label="Téléphone"
+            value={contacts.phone ?? 'Non renseigné'}
+          />
+          <ClassicInfoLine
+            label="Adresse"
+            value={contacts.address ?? 'Non renseignée'}
+          />
+        </View>
+        <View style={[styles.classicInfoPanel, styles.classicCardSurface]}>
+          <View style={styles.classicInfoPanelHeader}>
+            <View style={styles.classicInfoPanelIcon}>
+              <SymbolView
+                name={{ ios: 'car', android: 'directions_car', web: 'directions_car' }}
+                size={18}
+                tintColor="#2F5FA6"
+              />
+            </View>
+            <Text style={styles.classicInfoPanelTitle}>Véhicule retenu</Text>
+          </View>
+          <ClassicInfoLine
+            label="Véhicule"
+            value={
+              selectedVehicle
+                ? getVehicleDisplayName(selectedVehicle)
+                : 'À sélectionner'
+            }
+          />
+          <ClassicInfoLine
+            label="Immatriculation"
+            value={getClassicVehicleRegistration(selectedVehicle) ?? 'Non renseignée'}
+          />
+        </View>
+      </View>
+      <View style={styles.classicPrivacyNotice}>
+        <SymbolView
+          name={{ ios: 'lock.shield', android: 'lock', web: 'lock' }}
+          size={18}
+          tintColor="#2F5FA6"
+        />
+        <Text style={styles.classicPrivacyText}>
+          Ces données sont affichées en lecture seule et ne sont pas ressaisies dans ce parcours.
+        </Text>
+      </View>
+    </>
+  );
+}
+
+function ClassicInfoLine({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.classicInfoLine}>
+      <Text style={styles.classicInfoLabel}>{label}</Text>
+      <Text style={styles.classicInfoValue}>{value}</Text>
+    </View>
+  );
+}
+
+function ClassicCompactChoice({
+  active,
+  description,
+  icon,
+  label,
+  onPress,
+}: {
+  active: boolean;
+  description: string;
+  icon: ComponentProps<typeof SymbolView>['name'];
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.classicCompactChoice,
+        styles.classicCardSurface,
+        active && styles.classicCompactChoiceActive,
+        hovered && !active && styles.classicChoiceHovered,
+        pressed && styles.classicChoicePressed,
+      ]}
+    >
+      <View
+        style={[
+          styles.classicChoiceIcon,
+          active && styles.classicChoiceIconActive,
+        ]}
+      >
+        <SymbolView
+          name={icon}
+          size={20}
+          tintColor={active ? '#FFFFFF' : '#2F5FA6'}
+        />
+      </View>
+      <View style={styles.classicChoiceCopy}>
+        <Text style={styles.classicChoiceTitle}>{label}</Text>
+        {description ? (
+          <Text style={styles.classicChoiceMeta}>{description}</Text>
+        ) : null}
+      </View>
+      <View
+        style={[
+          styles.classicChoiceIndicator,
+          active && styles.classicChoiceIndicatorActive,
+        ]}
+      >
+        {active ? (
+          <SymbolView
+            name={{ ios: 'checkmark', android: 'check', web: 'check' }}
+            size={13}
+            tintColor="#FFFFFF"
+          />
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+
+function ClassicBookingSummary({
+  contacts,
+  isCompact,
+  selectedOption,
+  selectedServiceType,
+  selectedShowroom,
+  selectedVehicle,
+  workshopLabel,
+}: {
+  contacts: BookingContactDetails;
+  isCompact: boolean;
+  selectedOption: AiBookingAvailabilityOption | null;
+  selectedServiceType: DictionaryItem | null;
+  selectedShowroom: Showroom | null;
+  selectedVehicle: VehicleListItem | null;
+  workshopLabel: string | null;
+}) {
+  const logo = getBrandLogo(cleanClassicValue(selectedVehicle?.brandName));
+
+  return (
+    <View
+      style={[
+        styles.classicSummaryColumn,
+        styles.classicCardSurface,
+        isCompact && styles.classicSummaryColumnCompact,
+      ]}
+    >
+      <View style={styles.classicSummaryHeader}>
+        <Text style={styles.classicSummaryEyebrow}>Votre demande</Text>
+        <Text style={styles.classicSummaryTitle}>
+          Résumé de votre rendez-vous
+        </Text>
+      </View>
+      <View style={styles.classicSummaryContent}>
+        <View style={styles.classicSummaryVehicle}>
+          <View
+            style={[
+              styles.classicSummaryLogoFrame,
+              logo &&
+                'needsLightSurface' in logo &&
+                logo.needsLightSurface &&
+                styles.classicSummaryLogoFrameLight,
+            ]}
+          >
+            {logo ? (
+              <ExpoImage
+                accessibilityLabel={`Logo ${logo.name}`}
+                contentFit="contain"
+                source={logo.source}
+                style={styles.classicSummaryLogo}
+              />
+            ) : (
+              <SymbolView
+                name={{ ios: 'car', android: 'directions_car', web: 'directions_car' }}
+                size={27}
+                tintColor="#8FB7E8"
+              />
+            )}
+          </View>
+          <View style={styles.classicSummaryVehicleCopy}>
+            <Text style={styles.classicSummaryVehicleName}>
+              {selectedVehicle
+                ? getVehicleDisplayName(selectedVehicle)
+                : 'À sélectionner'}
+            </Text>
+            <Text style={styles.classicSummaryVehicleMeta}>
+              {getClassicVehicleRegistration(selectedVehicle) ?? 'À sélectionner'}
+            </Text>
+          </View>
+        </View>
+        <ClassicSummaryRow
+          icon={{ ios: 'person', android: 'person', web: 'person' }}
+          label="Coordonnées"
+          value={contacts.name}
+          meta={contacts.phone ?? contacts.email}
+        />
+        <ClassicSummaryRow
+          icon={{ ios: 'mappin', android: 'location_on', web: 'location_on' }}
+          label="Site SMEIA"
+          value={selectedShowroom?.name ?? 'À sélectionner'}
+          meta={selectedShowroom?.city}
+        />
+        <ClassicSummaryRow
+          icon={{ ios: 'wrench', android: 'build', web: 'build' }}
+          label="Type d’atelier"
+          value={workshopLabel ?? 'À sélectionner'}
+          meta={
+            selectedOption
+              ? `Atelier physique : ${selectedOption.workshop_name}`
+              : null
+          }
+        />
+        <ClassicSummaryRow
+          icon={{ ios: 'list.bullet', android: 'list', web: 'list' }}
+          label="Prestation"
+          value={selectedServiceType?.name ?? 'À sélectionner'}
+        />
+        <ClassicSummaryRow
+          icon={{ ios: 'calendar', android: 'event', web: 'event' }}
+          label="Date"
+          value={
+            selectedOption
+              ? formatBookingDate(selectedOption.requested_date)
+              : 'À sélectionner'
+          }
+        />
+        <ClassicSummaryRow
+          icon={{ ios: 'clock', android: 'schedule', web: 'schedule' }}
+          label="Heure"
+          value={
+            selectedOption
+              ? formatBookingTime(selectedOption.requested_time)
+              : 'À sélectionner'
+          }
+        />
+      </View>
+    </View>
+  );
+}
+
+function ClassicSummaryRow({
+  icon,
+  label,
+  meta,
+  value,
+}: {
+  icon: ComponentProps<typeof SymbolView>['name'];
+  label: string;
+  meta?: string | null;
+  value: string;
+}) {
+  return (
+    <View style={styles.classicSummaryRow}>
+      <View style={styles.classicSummaryRowIcon}>
+        <SymbolView name={icon} size={16} tintColor="#2F5FA6" />
+      </View>
+      <View style={styles.classicSummaryRowCopy}>
+        <Text style={styles.classicSummaryRowLabel}>{label}</Text>
+        <Text style={styles.classicSummaryRowValue}>{value}</Text>
+        {meta ? <Text style={styles.classicSummaryRowMeta}>{meta}</Text> : null}
+      </View>
     </View>
   );
 }
@@ -2193,6 +3214,7 @@ function DiagnosticResultPanel({
           isNarrow={isNarrow}
           onChangeJourney={onChangeJourney}
           selectedVehicle={selectedVehicle}
+          variant="ai"
         />
       ) : null}
 
@@ -2245,11 +3267,20 @@ function DiagnosticResultPanel({
 }
 
 type AiBookingPanelProps = {
+  calendarAvailability?: AiBookingCalendarResult | null;
+  calendarError?: Error | null;
+  calendarPending?: boolean;
+  classicStep?: ClassicBookingStep | null;
   contacts: BookingContactDetails;
   context: AiBookingContext;
+  initialShowroomId?: number | null;
   isNarrow: boolean;
   onChangeJourney: () => void;
+  onClassicOptionChange?: (option: AiBookingAvailabilityOption | null) => void;
+  onClassicStepChange?: (step: ClassicBookingStep) => void;
+  onCalendarRetry?: () => void;
   selectedVehicle: VehicleListItem;
+  variant: SecureManualBookingVariant;
 };
 
 type BookingOptionGroup = {
@@ -2284,20 +3315,45 @@ function groupBookingOptionsByWorkshop(
 }
 
 function AiBookingPanel({
+  calendarAvailability = null,
+  calendarError = null,
+  calendarPending = false,
+  classicStep = null,
   contacts,
   context,
+  initialShowroomId = null,
   isNarrow,
   onChangeJourney,
+  onClassicOptionChange,
+  onClassicStepChange,
+  onCalendarRetry,
   selectedVehicle,
+  variant,
 }: AiBookingPanelProps) {
+  const styles = getSecureManualBookingStyles(variant);
+  const isClassic = variant === 'classic';
   const showroomsQuery = useShowrooms();
   const availabilityMutation = useSearchAiAppointmentAvailability();
   const confirmationMutation = useConfirmAiAppointment();
   const availabilityLockRef = useRef(false);
+  const availabilityRequestIdRef = useRef(0);
   const confirmationLockRef = useRef(false);
   const idempotencyAttemptRef = useRef<BookingIdempotencyAttempt | null>(null);
+  const closestDaySearchRef = useRef(false);
+  const pendingClosestDaySlotsRef = useRef<string | null>(null);
+  const classicActiveDateRef = useRef<string | null>(null);
+  const classicDaySlotCacheRef = useRef(
+    new Map<string, AiBookingAvailabilityResult>()
+  );
+  const classicDaySlotDebounceRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  const classicDaySlotInFlightRef = useRef(new Set<string>());
+  const classicPendingDayAfterInFlightRef = useRef<string | null>(null);
+  const availabilityRetryAtRef = useRef<number | null>(null);
+  const rateLimitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedShowroomId, setSelectedShowroomId] =
-    useState<number | null>(null);
+    useState<number | null>(initialShowroomId);
   const [dateMode, setDateMode] = useState<BookingDateMode>('earliest');
   const [preferredDate, setPreferredDate] = useState('');
   const [preferredPeriod, setPreferredPeriod] =
@@ -2322,12 +3378,55 @@ function AiBookingPanel({
   const [bookingError, setBookingError] = useState<string | null>(null);
   const [preferenceError, setPreferenceError] = useState<string | null>(null);
   const [canSearchAllDay, setCanSearchAllDay] = useState(false);
+  const [isClosestDayPending, setIsClosestDayPending] = useState(false);
+  const [classicAvailabilityErrorKind, setClassicAvailabilityErrorKind] =
+    useState<ClassicAvailabilityErrorKind | null>(null);
+  const [availabilityRetryAt, setAvailabilityRetryAt] =
+    useState<number | null>(null);
+  const [knownUnavailableDates, setKnownUnavailableDates] = useState<
+    readonly string[]
+  >([]);
   const [lastSearchPreferredDate, setLastSearchPreferredDate] =
     useState<string | null>(null);
   const [expirationNow, setExpirationNow] = useState(() => Date.now());
   const minimumDate = getCasablancaTodayIso();
   const maximumDate = getBookingWindowEndIso(minimumDate);
+  const calendarMinimumDate =
+    calendarAvailability?.horizon_start ?? minimumDate;
+  const calendarMaximumDate =
+    calendarAvailability?.horizon_end ?? maximumDate;
+  const calendarUnavailableDates = useMemo(() => {
+    const unavailableDates = new Set(knownUnavailableDates);
+
+    if (calendarAvailability === null) {
+      return [...unavailableDates];
+    }
+
+    const availableDates = new Set(
+      calendarAvailability.days.map((day) => day.date)
+    );
+
+    for (let offset = 0; offset < 30; offset += 1) {
+      const date = addBookingDateDays(calendarAvailability.horizon_start, offset);
+
+      if (date > calendarAvailability.horizon_end) {
+        break;
+      }
+
+      if (!isWeekendBookingDate(date) && !availableDates.has(date)) {
+        unavailableDates.add(date);
+      }
+    }
+
+    return [...unavailableDates];
+  }, [calendarAvailability, knownUnavailableDates]);
   const serviceTypeId = context.serviceTypeId;
+  const classicDaySlotScopeKey = [
+    selectedVehicle.id,
+    serviceTypeId,
+    selectedShowroomId ?? 'none',
+    context.workshopTypes.join(','),
+  ].join(':');
   const showrooms = showroomsQuery.data ?? [];
   const hasReachedSlotSelection =
     availability !== null ||
@@ -2364,6 +3463,49 @@ function AiBookingPanel({
         : [],
     [availability, availabilityView]
   );
+  const classicFilteredDaySlotGroups = useMemo(() => {
+    if (availabilityView !== 'day_slots' || availability === null) {
+      return [];
+    }
+
+    const filteredOptions = availability.options.filter((option) => {
+      if (preferredPeriod === 'any') {
+        return true;
+      }
+
+      const hour = Number(option.requested_time.split(':')[0]);
+      const isMorning = Number.isFinite(hour) && hour < 12;
+
+      return preferredPeriod === 'morning' ? isMorning : !isMorning;
+    });
+
+    return groupBookingOptionsByWorkshop(filteredOptions);
+  }, [availability, availabilityView, preferredPeriod]);
+
+  useEffect(() => {
+    if (!isClassic) {
+      return;
+    }
+
+    classicDaySlotCacheRef.current.clear();
+    classicDaySlotInFlightRef.current.clear();
+    classicPendingDayAfterInFlightRef.current = null;
+    classicActiveDateRef.current = null;
+    setKnownUnavailableDates([]);
+  }, [classicDaySlotScopeKey, isClassic]);
+
+  useEffect(
+    () => () => {
+      if (classicDaySlotDebounceRef.current) {
+        clearTimeout(classicDaySlotDebounceRef.current);
+      }
+      if (rateLimitTimerRef.current) {
+        clearTimeout(rateLimitTimerRef.current);
+      }
+      availabilityRequestIdRef.current += 1;
+    },
+    []
+  );
 
   useEffect(() => {
     if (!availability && !suggestionAvailability && !selectedOption) {
@@ -2395,11 +3537,23 @@ function AiBookingPanel({
 
   const clearSelectedOffer = () => {
     setSelectedOption(null);
+    onClassicOptionChange?.(null);
     idempotencyAttemptRef.current = null;
     confirmationMutation.reset();
   };
 
   const clearAvailability = () => {
+    if (classicDaySlotDebounceRef.current) {
+      clearTimeout(classicDaySlotDebounceRef.current);
+      classicDaySlotDebounceRef.current = null;
+    }
+    availabilityRequestIdRef.current += 1;
+    availabilityLockRef.current = false;
+    pendingClosestDaySlotsRef.current = null;
+    classicPendingDayAfterInFlightRef.current = null;
+    closestDaySearchRef.current = false;
+    setIsClosestDayPending(false);
+    setClassicAvailabilityErrorKind(null);
     setAvailability(null);
     setSuggestionAvailability(null);
     setAvailabilityView('suggestions');
@@ -2427,6 +3581,7 @@ function AiBookingPanel({
       setBookingSuccess(null);
       setBookingError(null);
       setPreferenceError(null);
+      setKnownUnavailableDates([]);
       setSelectedShowroomId(showroomId);
     }
   };
@@ -2464,18 +3619,69 @@ function AiBookingPanel({
     setPreferredPeriod(period);
   };
 
+  const rememberUnavailableDate = (date: string) => {
+    setKnownUnavailableDates((currentDates) =>
+      currentDates.includes(date)
+        ? currentDates
+        : [...currentDates, date]
+    );
+  };
+
+  const getClassicDaySlotCacheKey = (date: string) =>
+    `${classicDaySlotScopeKey}:${date}`;
+
+  const startAvailabilityRateLimitCooldown = (error: HttpError) => {
+    const retryAfterSeconds =
+      error.retryAfterSeconds ?? DEFAULT_RATE_LIMIT_RETRY_SECONDS;
+    const retryAt = Date.now() + retryAfterSeconds * 1_000;
+
+    if (rateLimitTimerRef.current) {
+      clearTimeout(rateLimitTimerRef.current);
+    }
+
+    setAvailabilityRetryAt(retryAt);
+    availabilityRetryAtRef.current = retryAt;
+    setClassicAvailabilityErrorKind('rate_limit');
+    setBookingError(
+      'Les disponibilités sont temporairement indisponibles en raison de plusieurs recherches rapprochées. Patientez quelques secondes puis réessayez.'
+    );
+    rateLimitTimerRef.current = setTimeout(() => {
+      setAvailabilityRetryAt(null);
+      availabilityRetryAtRef.current = null;
+      rateLimitTimerRef.current = null;
+    }, retryAfterSeconds * 1_000);
+  };
+
   const performAvailabilitySearch = (
-    resultMode: AiBookingResultMode,
+    resultMode: Exclude<AiBookingResultMode, 'calendar'>,
     requestedDate: string | null,
     requestedPeriod: AiBookingPreferredPeriod
   ) => {
+    const classicDaySlotKey =
+      isClassic && resultMode === 'day_slots' && requestedDate !== null
+        ? getClassicDaySlotCacheKey(requestedDate)
+        : null;
+
     if (
       availabilityLockRef.current ||
-      availabilityMutation.isPending ||
       confirmationMutation.isPending ||
       selectedShowroomId === null ||
-      context.workshopTypes.length === 0
+      context.workshopTypes.length === 0 ||
+      (classicDaySlotKey !== null &&
+        classicDaySlotInFlightRef.current.has(classicDaySlotKey))
     ) {
+      return;
+    }
+
+    if (
+      isClassic &&
+      availabilityRetryAtRef.current !== null &&
+      Date.now() < availabilityRetryAtRef.current
+    ) {
+      setClassicAvailabilityErrorKind('rate_limit');
+      setBookingError(
+        'Les disponibilités sont temporairement indisponibles en raison de plusieurs recherches rapprochées. Patientez quelques secondes puis réessayez.'
+      );
       return;
     }
 
@@ -2488,9 +3694,15 @@ function AiBookingPanel({
       return;
     }
 
+    const requestId = availabilityRequestIdRef.current + 1;
+    availabilityRequestIdRef.current = requestId;
     availabilityLockRef.current = true;
+    if (classicDaySlotKey !== null) {
+      classicDaySlotInFlightRef.current.add(classicDaySlotKey);
+    }
     setPreferenceError(null);
     setBookingError(null);
+    setClassicAvailabilityErrorKind(null);
     setAvailability(null);
     clearSelectedOffer();
     setBookingSuccess(null);
@@ -2519,6 +3731,10 @@ function AiBookingPanel({
       },
       {
         onSuccess: (response) => {
+          if (requestId !== availabilityRequestIdRef.current) {
+            return;
+          }
+
           const displayAvailability =
             resultMode === 'suggestions'
               ? {
@@ -2531,27 +3747,121 @@ function AiBookingPanel({
           setAvailability(displayAvailability);
           if (resultMode === 'suggestions') {
             setSuggestionAvailability(displayAvailability);
+
+            if (isClassic && closestDaySearchRef.current) {
+              const closestOption = response.options.find(
+                (option) => !isWeekendBookingDate(option.requested_date)
+              );
+
+              if (closestOption) {
+                const closestDate = closestOption.requested_date;
+                const closestCacheKey =
+                  getClassicDaySlotCacheKey(closestDate);
+                const cachedClosestDay =
+                  classicDaySlotCacheRef.current.get(closestCacheKey);
+
+                classicActiveDateRef.current = closestDate;
+                setPreferredDate(closestOption.requested_date);
+                setDayPickerDate(closestOption.requested_date);
+                setPreferredPeriod('any');
+                if (cachedClosestDay) {
+                  applyClassicDaySlotResult(closestDate, cachedClosestDay);
+                  closestDaySearchRef.current = false;
+                  setIsClosestDayPending(false);
+                } else {
+                  pendingClosestDaySlotsRef.current = closestDate;
+                }
+              } else {
+                closestDaySearchRef.current = false;
+                setIsClosestDayPending(false);
+              }
+            }
+          } else if (requestedDate !== null) {
+            if (classicDaySlotKey !== null) {
+              classicDaySlotCacheRef.current.set(
+                classicDaySlotKey,
+                response
+              );
+            }
+
+            if (requestedPeriod === 'any' && response.options.length === 0) {
+              rememberUnavailableDate(requestedDate);
+            }
+
+            if (closestDaySearchRef.current) {
+              closestDaySearchRef.current = false;
+              setIsClosestDayPending(false);
+            }
           }
           availabilityMutation.reset();
         },
         onError: (error) => {
+          if (requestId !== availabilityRequestIdRef.current) {
+            return;
+          }
+
           const availabilityNotFound =
             error instanceof HttpError &&
             error.code === 'BOOKING_AVAILABILITY_NOT_FOUND';
 
-          setBookingError(
-            resultMode === 'day_slots' && availabilityNotFound
-              ? getDaySlotsNotFoundMessage(requestedPeriod)
-              : getAiBookingErrorMessage(error)
-          );
+          if (isClassic && error instanceof HttpError && error.status === 429) {
+            startAvailabilityRateLimitCooldown(error);
+          } else {
+            if (isClassic && resultMode === 'day_slots') {
+              setClassicAvailabilityErrorKind('request');
+            }
+            setBookingError(
+              resultMode === 'day_slots' && availabilityNotFound
+                ? getDaySlotsNotFoundMessage(requestedPeriod)
+                : getAiBookingErrorMessage(error)
+            );
+          }
           setCanSearchAllDay(
-            resultMode === 'suggestions' &&
+            (isClassic
+              ? resultMode === 'day_slots'
+              : resultMode === 'suggestions') &&
               requestedPeriod !== 'any' &&
               availabilityNotFound
           );
+
+          if (closestDaySearchRef.current) {
+            closestDaySearchRef.current = false;
+            pendingClosestDaySlotsRef.current = null;
+            setIsClosestDayPending(false);
+          }
         },
         onSettled: () => {
+          const retrySelectedDateAfterInFlight =
+            classicDaySlotKey !== null &&
+            requestedDate !== null &&
+            classicPendingDayAfterInFlightRef.current === requestedDate &&
+            classicActiveDateRef.current === requestedDate &&
+            !classicDaySlotCacheRef.current.has(classicDaySlotKey);
+
+          if (classicDaySlotKey !== null) {
+            classicDaySlotInFlightRef.current.delete(classicDaySlotKey);
+          }
+
+          if (retrySelectedDateAfterInFlight && requestedDate !== null) {
+            classicPendingDayAfterInFlightRef.current = null;
+            setTimeout(() => {
+              loadClassicDaySlots(requestedDate, { debounce: false });
+            }, 0);
+          }
+
+          if (requestId !== availabilityRequestIdRef.current) {
+            return;
+          }
+
           availabilityLockRef.current = false;
+          const closestDate = pendingClosestDaySlotsRef.current;
+
+          if (closestDate) {
+            pendingClosestDaySlotsRef.current = null;
+            setTimeout(() => {
+              performAvailabilitySearch('day_slots', closestDate, 'any');
+            }, 0);
+          }
         },
       }
     );
@@ -2576,6 +3886,167 @@ function AiBookingPanel({
       requestedDate.trim() || null,
       requestedPeriod
     );
+  };
+
+  const applyClassicDaySlotResult = (
+    date: string,
+    result: AiBookingAvailabilityResult
+  ) => {
+    setExpirationNow(Date.now());
+    setAvailability(result);
+    setAvailabilityView('day_slots');
+    setDaySlotsDate(date);
+    setDaySlotsPeriod('any');
+    setBookingError(null);
+    setClassicAvailabilityErrorKind(null);
+    setCanSearchAllDay(false);
+
+    if (result.options.length === 0) {
+      rememberUnavailableDate(date);
+    }
+  };
+
+  const loadClassicDaySlots = (
+    date: string,
+    { debounce = true }: { debounce?: boolean } = {}
+  ) => {
+    const cacheKey = getClassicDaySlotCacheKey(date);
+    const cachedResult = classicDaySlotCacheRef.current.get(cacheKey);
+
+    if (cachedResult) {
+      applyClassicDaySlotResult(date, cachedResult);
+      return;
+    }
+
+    if (
+      availabilityRetryAtRef.current !== null &&
+      Date.now() < availabilityRetryAtRef.current
+    ) {
+      setClassicAvailabilityErrorKind('rate_limit');
+      setBookingError(
+        'Les disponibilités sont temporairement indisponibles en raison de plusieurs recherches rapprochées. Patientez quelques secondes puis réessayez.'
+      );
+      return;
+    }
+
+    if (classicDaySlotInFlightRef.current.has(cacheKey)) {
+      classicPendingDayAfterInFlightRef.current = date;
+      return;
+    }
+
+    if (classicDaySlotDebounceRef.current) {
+      clearTimeout(classicDaySlotDebounceRef.current);
+      classicDaySlotDebounceRef.current = null;
+    }
+
+    const startSearch = () => {
+      classicDaySlotDebounceRef.current = null;
+
+      if (classicActiveDateRef.current !== date) {
+        return;
+      }
+
+      const latestCachedResult =
+        classicDaySlotCacheRef.current.get(cacheKey);
+      if (latestCachedResult) {
+        applyClassicDaySlotResult(date, latestCachedResult);
+        return;
+      }
+
+      if (classicDaySlotInFlightRef.current.has(cacheKey)) {
+        classicPendingDayAfterInFlightRef.current = date;
+        return;
+      }
+
+      performAvailabilitySearch('day_slots', date, 'any');
+    };
+
+    if (debounce) {
+      classicDaySlotDebounceRef.current = setTimeout(
+        startSearch,
+        CLASSIC_DAY_SLOTS_DEBOUNCE_MS
+      );
+    } else {
+      startSearch();
+    }
+  };
+
+  const handleClassicDateSelection = (value: string) => {
+    if (confirmationMutation.isPending || isWeekendBookingDate(value)) {
+      return;
+    }
+
+    const cacheKey = getClassicDaySlotCacheKey(value);
+    if (
+      classicActiveDateRef.current === value &&
+      (classicDaySlotCacheRef.current.has(cacheKey) ||
+        classicDaySlotInFlightRef.current.has(cacheKey) ||
+        classicDaySlotDebounceRef.current !== null)
+    ) {
+      return;
+    }
+
+    clearAvailability();
+    classicActiveDateRef.current = value;
+    setDateMode('date');
+    setPreferredDate(value);
+    setDayPickerDate(value);
+    setDayPickerPeriod('any');
+    setBookingSuccess(null);
+    setBookingError(null);
+    setPreferenceError(null);
+    loadClassicDaySlots(value);
+  };
+
+  const handleClassicPeriodSelection = (
+    period: AiBookingPreferredPeriod
+  ) => {
+    if (confirmationMutation.isPending || period === preferredPeriod) {
+      return;
+    }
+
+    clearSelectedOffer();
+    setPreferredPeriod(period);
+    setDayPickerPeriod(period);
+    setBookingError(null);
+    setClassicAvailabilityErrorKind(null);
+    setBookingSuccess(null);
+  };
+
+  const handleClassicAvailabilityRetry = () => {
+    if (
+      !preferredDate ||
+      confirmationMutation.isPending ||
+      (availabilityRetryAtRef.current !== null &&
+        Date.now() < availabilityRetryAtRef.current)
+    ) {
+      return;
+    }
+
+    setBookingError(null);
+    setClassicAvailabilityErrorKind(null);
+    loadClassicDaySlots(preferredDate, { debounce: false });
+  };
+
+  const handleClosestDaySelection = () => {
+    if (
+      isBookingPending ||
+      closestDaySearchRef.current ||
+      (availabilityRetryAtRef.current !== null &&
+        Date.now() < availabilityRetryAtRef.current)
+    ) {
+      return;
+    }
+
+    clearAvailability();
+    closestDaySearchRef.current = true;
+    setIsClosestDayPending(true);
+    setDateMode('earliest');
+    setPreferredDate('');
+    setPreferredPeriod('any');
+    setDayPickerPeriod('any');
+    setBookingSuccess(null);
+    performAvailabilitySearch('suggestions', null, 'any');
   };
 
   const openDayPicker = (initialDate: string | null) => {
@@ -2654,6 +4125,7 @@ function AiBookingPanel({
     }
 
     setSelectedOption(option);
+    onClassicOptionChange?.(option);
     setBookingError(null);
   };
 
@@ -2736,6 +4208,10 @@ function AiBookingPanel({
     );
   };
 
+  if (isClassic && (classicStep === null || classicStep < 6)) {
+    return null;
+  }
+
   if (bookingSuccess) {
     return (
       <View
@@ -2759,31 +4235,42 @@ function AiBookingPanel({
           <BookingSummaryItem
             label="Numéro du rendez-vous"
             value={`#${bookingSuccess.appointment_id}`}
+            variant={variant}
           />
-          <BookingSummaryItem label="Statut" value="En attente" />
+          <BookingSummaryItem
+            label="Statut"
+            value="En attente"
+            variant={variant}
+          />
           <BookingSummaryItem
             label="Véhicule"
             value={bookingSuccess.vehicle.label}
+            variant={variant}
           />
           <BookingSummaryItem
             label="Service"
             value={bookingSuccess.service_type.name}
+            variant={variant}
           />
           <BookingSummaryItem
             label="Atelier"
             value={bookingSuccess.workshop.name}
+            variant={variant}
           />
           <BookingSummaryItem
             label="Showroom"
             value={bookingSuccess.showroom.name}
+            variant={variant}
           />
           <BookingSummaryItem
             label="Date"
             value={formatBookingDate(bookingSuccess.requested_date)}
+            variant={variant}
           />
           <BookingSummaryItem
             label="Heure"
             value={formatBookingTime(bookingSuccess.requested_time)}
+            variant={variant}
           />
         </View>
 
@@ -2801,7 +4288,328 @@ function AiBookingPanel({
             </Text>
           </Pressable>
         </Link>
-        <BookingResetButton disabled={false} onReset={onChangeJourney} />
+        <BookingResetButton
+          disabled={false}
+          onReset={onChangeJourney}
+          variant={variant}
+        />
+      </View>
+    );
+  }
+
+  if (isClassic && classicStep === 6) {
+    const hasDisplayedDaySlots =
+      availability !== null &&
+      availabilityView === 'day_slots' &&
+      daySlotsDate === preferredDate;
+    const hasSlotsOutsideSelectedPeriod =
+      hasDisplayedDaySlots &&
+      availability.options.length > 0 &&
+      classicFilteredDaySlotGroups.length === 0 &&
+      preferredPeriod !== 'any';
+
+    return (
+      <View
+        style={[styles.bookingShell, isNarrow && styles.bookingShellNarrow]}
+      >
+        <View style={styles.classicDateTimeHeader}>
+          <Text style={styles.bookingSectionKicker}>ÉTAPE 6</Text>
+          <Text style={styles.bookingSectionTitle}>Date et heure</Text>
+          <Text style={styles.bookingSectionText}>
+            Choisissez une date ouvrée puis un créneau réel. Les disponibilités
+            sont calculées par le service de réservation sécurisé. Fuseau :{' '}
+            {AI_BOOKING_TIME_ZONE}.
+          </Text>
+        </View>
+
+        {calendarPending ? (
+          <LoadingState message="Chargement du calendrier des disponibilités…" />
+        ) : calendarError ? (
+          <View style={styles.classicAvailabilityErrorBlock}>
+            <ControlledErrorPanel
+              message={getAiBookingErrorMessage(calendarError)}
+              title="Calendrier temporairement indisponible"
+              variant="classic"
+            />
+            <Pressable
+              accessibilityRole="button"
+              disabled={calendarPending}
+              onPress={onCalendarRetry}
+              style={({ hovered, pressed }) => [
+                styles.bookingSecondaryAction,
+                hovered && !calendarPending &&
+                  styles.bookingSecondaryActionHovered,
+                pressed && styles.pressed,
+                calendarPending && styles.disabled,
+              ]}
+            >
+              <Text style={styles.bookingSecondaryActionText}>Réessayer</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <View
+          style={[
+            styles.classicDateTimeLayout,
+            isNarrow && styles.classicDateTimeLayoutNarrow,
+          ]}
+        >
+          <View style={styles.classicCalendarColumn}>
+            <Text style={styles.classicFieldLabel}>Choisissez une date</Text>
+            <BookingDateCalendar
+              compact={isNarrow}
+              disabled={
+                confirmationMutation.isPending ||
+                calendarPending ||
+                calendarAvailability === null
+              }
+              disableWeekends
+              maximumDate={calendarMaximumDate}
+              minimumDate={calendarMinimumDate}
+              onSelect={handleClassicDateSelection}
+              selectedDate={preferredDate || null}
+              unavailableDates={calendarUnavailableDates}
+              variant="classic"
+            />
+          </View>
+
+          <View
+            style={[
+              styles.classicHoursPanel,
+              styles.classicCardSurface,
+            ]}
+          >
+            <View style={styles.classicHoursHeader}>
+              <View style={styles.bookingHeaderCopy}>
+                <Text style={styles.bookingSectionTitle}>
+                  Horaires disponibles
+                </Text>
+                <Text style={styles.bookingSectionText}>
+                  {preferredDate
+                    ? formatBookingDate(preferredDate)
+                    : 'Sélectionnez d’abord une date dans le calendrier.'}
+                </Text>
+              </View>
+            </View>
+
+            <Text style={styles.bookingFieldLabel}>Période</Text>
+            <View style={styles.bookingPeriodRow}>
+              {bookingPeriodOptions.map((period) => (
+                <BookingChoiceButton
+                  key={period.value}
+                  disabled={confirmationMutation.isPending}
+                  label={period.label}
+                  onPress={() => {
+                    handleClassicPeriodSelection(period.value);
+                  }}
+                  selected={preferredPeriod === period.value}
+                  variant="classic"
+                />
+              ))}
+            </View>
+
+            {availabilityMutation.isPending || isClosestDayPending ? (
+              <LoadingState
+                message={
+                  isClosestDayPending
+                    ? 'Recherche du prochain jour disponible…'
+                    : 'Recherche des horaires disponibles…'
+                }
+              />
+            ) : preferredDate.length === 0 ? (
+              <View style={styles.classicHoursEmpty}>
+                <Text style={styles.bookingEmptyText}>
+                  Choisissez une date ouvrée pour afficher ses horaires.
+                </Text>
+              </View>
+            ) : hasDisplayedDaySlots &&
+              classicFilteredDaySlotGroups.length > 0 ? (
+              <View style={styles.bookingDayGroups}>
+                {classicFilteredDaySlotGroups.map((group) => (
+                  <View
+                    key={`${group.workshopId}:${group.showroomName}`}
+                    style={styles.bookingDayGroup}
+                  >
+                    <View style={styles.bookingDayGroupHeader}>
+                      <Text style={styles.bookingWorkshopName}>
+                        {group.workshopName}
+                      </Text>
+                      <Text style={styles.bookingDayShowroom}>
+                        {group.showroomName}
+                      </Text>
+                    </View>
+                    <View style={styles.bookingTimeGrid}>
+                      {group.options.map((option) => {
+                        const expired = isBookingOptionExpired(
+                          option.expires_at,
+                          expirationNow
+                        );
+                        const selected =
+                          selectedOption?.slot_token === option.slot_token;
+
+                        return (
+                          <Pressable
+                            key={option.slot_token}
+                            accessibilityLabel={`Choisir ${formatBookingTime(option.requested_time)} à ${group.workshopName}`}
+                            accessibilityRole="button"
+                            accessibilityState={{
+                              disabled: expired || confirmationMutation.isPending,
+                              selected,
+                            }}
+                            disabled={expired || confirmationMutation.isPending}
+                            onPress={() => {
+                              handleOptionSelection(option);
+                            }}
+                            style={({ hovered, pressed }) => [
+                              styles.bookingTimeChip,
+                              selected && styles.bookingTimeChipSelected,
+                              hovered && !expired &&
+                                !confirmationMutation.isPending &&
+                                styles.bookingTimeChipHovered,
+                              pressed && styles.pressed,
+                              (expired || confirmationMutation.isPending) &&
+                                styles.disabled,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.bookingTimeChipText,
+                                selected && styles.bookingTimeChipTextSelected,
+                              ]}
+                            >
+                              {formatBookingTime(option.requested_time)}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+                ))}
+              </View>
+            ) : hasDisplayedDaySlots && availability.options.length === 0 ? (
+              <View style={styles.classicHoursEmpty}>
+                <Text style={styles.bookingEmptyText}>
+                  Aucun créneau disponible pour cette journée.
+                </Text>
+              </View>
+            ) : hasSlotsOutsideSelectedPeriod ? null : bookingError ? (
+              <View style={styles.classicAvailabilityErrorBlock}>
+                <ControlledErrorPanel
+                  message={bookingError}
+                  title={
+                    classicAvailabilityErrorKind === 'rate_limit'
+                      ? 'Recherches temporairement limitées'
+                      : 'Disponibilités temporairement indisponibles'
+                  }
+                  variant="classic"
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={
+                    confirmationMutation.isPending ||
+                    availabilityRetryAt !== null
+                  }
+                  onPress={handleClassicAvailabilityRetry}
+                  style={({ hovered, pressed }) => [
+                    styles.bookingSecondaryAction,
+                    hovered && !confirmationMutation.isPending &&
+                      availabilityRetryAt === null &&
+                      styles.bookingSecondaryActionHovered,
+                    pressed && styles.pressed,
+                    (confirmationMutation.isPending ||
+                      availabilityRetryAt !== null) &&
+                      styles.disabled,
+                  ]}
+                >
+                  <Text style={styles.bookingSecondaryActionText}>
+                    {availabilityRetryAt !== null
+                      ? 'Réessayer dans quelques secondes'
+                      : 'Réessayer'}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={styles.classicHoursEmpty}>
+                <Text style={styles.bookingEmptyText}>
+                  Aucun créneau disponible pour cette date.
+                </Text>
+              </View>
+            )}
+
+            {hasSlotsOutsideSelectedPeriod ? (
+              <View style={styles.bookingAlternativeNotice}>
+                <Text style={styles.bookingAlternativeText}>
+                  Aucun créneau dans cette période. Afficher toute la journée ?
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={confirmationMutation.isPending}
+                  onPress={() => {
+                    handleClassicPeriodSelection('any');
+                  }}
+                  style={({ hovered, pressed }) => [
+                    styles.bookingPrimaryAction,
+                    hovered && !confirmationMutation.isPending &&
+                      styles.bookingPrimaryActionHovered,
+                    pressed && styles.pressed,
+                    confirmationMutation.isPending && styles.disabled,
+                  ]}
+                >
+                  <Text style={styles.bookingPrimaryActionText}>
+                    Afficher toute la journée
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        </View>
+
+        <View style={styles.classicClosestDayNotice}>
+          <View style={styles.classicClosestDayCopy}>
+            <Text style={styles.classicClosestDayTitle}>
+              Vous souhaitez gagner du temps ?
+            </Text>
+            <Text style={styles.classicClosestDayText}>
+              Nous pouvons sélectionner automatiquement le jour disponible le
+              plus proche.
+            </Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            disabled={
+              isBookingPending ||
+              isClosestDayPending ||
+              availabilityRetryAt !== null
+            }
+            onPress={handleClosestDaySelection}
+            style={({ hovered, pressed }) => [
+              styles.bookingSecondaryAction,
+              hovered && !isBookingPending && !isClosestDayPending &&
+                availabilityRetryAt === null &&
+                styles.bookingSecondaryActionHovered,
+              pressed && styles.pressed,
+              (isBookingPending ||
+                isClosestDayPending ||
+                availabilityRetryAt !== null) &&
+                styles.disabled,
+            ]}
+          >
+            <Text style={styles.bookingSecondaryActionText}>
+              Choisir le prochain jour disponible
+            </Text>
+          </Pressable>
+        </View>
+
+        <ClassicBookingWizardActions
+          canContinue={selectedOption !== null && !selectedOptionExpired}
+          isPending={confirmationMutation.isPending}
+          onBack={() => {
+            onClassicStepChange?.(5);
+          }}
+          onContinue={() => {
+            onClassicStepChange?.(7);
+          }}
+        />
       </View>
     );
   }
@@ -2810,6 +4618,8 @@ function AiBookingPanel({
     <View
       style={[styles.bookingShell, isNarrow && styles.bookingShellNarrow]}
     >
+      {!isClassic ? (
+        <>
       <View style={styles.bookingHeader}>
         <View
           style={[
@@ -2879,14 +4689,19 @@ function AiBookingPanel({
           );
         })}
       </View>
+        </>
+      ) : null}
 
-      <View
+      {!isClassic ? (
+        <View
         style={[
           styles.bookingSection,
           isNarrow && styles.bookingSectionNarrow,
         ]}
       >
-        <Text style={styles.bookingSectionKicker}>ÉTAPE 1</Text>
+        <Text style={styles.bookingSectionKicker}>
+          {isClassic ? 'ÉTAPE 3' : 'ÉTAPE 1'}
+        </Text>
         <Text style={styles.bookingSectionTitle}>
           Choisissez votre site SMEIA
         </Text>
@@ -2900,6 +4715,7 @@ function AiBookingPanel({
           <ControlledErrorPanel
             message="Les sites SMEIA sont temporairement indisponibles."
             title="Réservation indisponible"
+            variant={variant}
           />
         ) : showrooms.length > 0 ? (
           <View style={styles.bookingWorkshopGrid}>
@@ -2958,8 +4774,11 @@ function AiBookingPanel({
           </Text>
         )}
       </View>
+      ) : null}
 
-      {selectedShowroomId !== null &&
+      {!isClassic &&
+      selectedShowroomId !== null &&
+      (!isClassic || availability === null) &&
       availabilityView === 'suggestions' &&
       !showDayPicker ? (
         <View
@@ -2968,7 +4787,9 @@ function AiBookingPanel({
             isNarrow && styles.bookingSectionNarrow,
           ]}
         >
-          <Text style={styles.bookingSectionKicker}>ÉTAPE 2</Text>
+          <Text style={styles.bookingSectionKicker}>
+            {isClassic ? 'ÉTAPE 6' : 'ÉTAPE 2'}
+          </Text>
           <Text style={styles.bookingSectionTitle}>
             Indiquez votre préférence
           </Text>
@@ -2985,6 +4806,7 @@ function AiBookingPanel({
                 handleDateModeChange('earliest');
               }}
               selected={dateMode === 'earliest'}
+              variant={variant}
             />
             <BookingChoiceButton
               disabled={isBookingPending}
@@ -2993,6 +4815,7 @@ function AiBookingPanel({
                 handleDateModeChange('date');
               }}
               selected={dateMode === 'date'}
+              variant={variant}
             />
           </View>
 
@@ -3004,6 +4827,7 @@ function AiBookingPanel({
               minimumDate={minimumDate}
               onSelect={handlePreferredDateSelection}
               selectedDate={preferredDate || null}
+              variant={variant}
             />
           ) : null}
 
@@ -3018,6 +4842,7 @@ function AiBookingPanel({
                   handlePeriodChange(period.value);
                 }}
                 selected={preferredPeriod === period.value}
+                variant={variant}
               />
             ))}
           </View>
@@ -3069,6 +4894,7 @@ function AiBookingPanel({
         <ControlledErrorPanel
           message={bookingError}
           title="Réservation indisponible"
+          variant={variant}
         />
       ) : null}
 
@@ -3144,7 +4970,7 @@ function AiBookingPanel({
         </View>
       ) : null}
 
-      {showDayPicker ? (
+      {!isClassic && showDayPicker ? (
         <View
           style={[
             styles.bookingSection,
@@ -3185,6 +5011,7 @@ function AiBookingPanel({
             minimumDate={minimumDate}
             onSelect={handleDayPickerDateSelection}
             selectedDate={dayPickerDate || null}
+            variant={variant}
           />
 
           <Text style={styles.bookingFieldLabel}>Période</Text>
@@ -3198,6 +5025,7 @@ function AiBookingPanel({
                   handleDayPickerPeriodChange(period.value);
                 }}
                 selected={dayPickerPeriod === period.value}
+                variant={variant}
               />
             ))}
           </View>
@@ -3230,14 +5058,18 @@ function AiBookingPanel({
         </View>
       ) : null}
 
-      {availability && availabilityView === 'suggestions' ? (
+      {!isClassic &&
+      availability &&
+      availabilityView === 'suggestions' ? (
         <View
           style={[
             styles.bookingSection,
             isNarrow && styles.bookingSectionNarrow,
           ]}
         >
-          <Text style={styles.bookingSectionKicker}>ÉTAPE 3</Text>
+          <Text style={styles.bookingSectionKicker}>
+            {isClassic ? 'ÉTAPE 6' : 'ÉTAPE 3'}
+          </Text>
           <Text style={styles.bookingSectionTitle}>
             Choisissez un créneau réel
           </Text>
@@ -3316,26 +5148,32 @@ function AiBookingPanel({
                     <BookingDetailLine
                       label="Atelier"
                       value={option.workshop_name}
+                      variant={variant}
                     />
                     <BookingDetailLine
                       label="Showroom"
                       value={option.showroom.name}
+                      variant={variant}
                     />
                     <BookingDetailLine
                       label="Ville"
                       value={option.showroom.city ?? 'Non renseignée'}
+                      variant={variant}
                     />
                     <BookingDetailLine
                       label="Adresse"
                       value={option.showroom.address ?? 'Non renseignée'}
+                      variant={variant}
                     />
                     <BookingDetailLine
                       label="Téléphone"
                       value={option.showroom.phone ?? 'Non renseigné'}
+                      variant={variant}
                     />
                     <BookingDetailLine
                       label="Intervalle"
                       value={`${option.slot_interval_minutes} minutes`}
+                      variant={variant}
                     />
                     {expired ? (
                       <Text style={styles.bookingExpiredText}>
@@ -3363,6 +5201,7 @@ function AiBookingPanel({
                 onPress={() => {
                   handleDaySlotsSearch(suggestionTargetDate, 'morning');
                 }}
+                variant={variant}
               />
               <BookingExpansionAction
                 disabled={isBookingPending}
@@ -3371,6 +5210,7 @@ function AiBookingPanel({
                 onPress={() => {
                   handleDaySlotsSearch(suggestionTargetDate, 'afternoon');
                 }}
+                variant={variant}
               />
               <BookingExpansionAction
                 disabled={isBookingPending}
@@ -3379,13 +5219,15 @@ function AiBookingPanel({
                 onPress={() => {
                   openDayPicker(suggestionTargetDate);
                 }}
+                variant={variant}
               />
             </View>
           ) : null}
         </View>
       ) : null}
 
-      {availability &&
+      {!isClassic &&
+      availability &&
       availabilityView === 'day_slots' &&
       !showDayPicker ? (
         <View
@@ -3396,7 +5238,9 @@ function AiBookingPanel({
         >
           <View style={styles.bookingDayNavigation}>
             <View style={styles.bookingHeaderCopy}>
-              <Text style={styles.bookingSectionKicker}>ÉTAPE 3</Text>
+              <Text style={styles.bookingSectionKicker}>
+                {isClassic ? 'ÉTAPE 6' : 'ÉTAPE 3'}
+              </Text>
               <Text style={styles.bookingSectionTitle}>
                 Tous les créneaux du{' '}
                 {daySlotsPeriod === 'morning'
@@ -3512,7 +5356,7 @@ function AiBookingPanel({
         </View>
       ) : null}
 
-      {selectedOption ? (
+      {(!isClassic || classicStep === 7) && selectedOption ? (
         <View
           style={[
             styles.bookingSection,
@@ -3520,7 +5364,9 @@ function AiBookingPanel({
             styles.bookingConfirmationSection,
           ]}
         >
-          <Text style={styles.bookingSectionKicker}>ÉTAPE 4</Text>
+          <Text style={styles.bookingSectionKicker}>
+            {isClassic ? 'ÉTAPE 7' : 'ÉTAPE 4'}
+          </Text>
           <Text style={styles.bookingSectionTitle}>
             Vérifiez votre demande
           </Text>
@@ -3532,42 +5378,62 @@ function AiBookingPanel({
             <BookingSummaryItem
               label="Véhicule"
               value={getVehicleDisplayName(selectedVehicle)}
+              variant={variant}
             />
+            {isClassic && context.needLabel ? (
+              <BookingSummaryItem
+                label="Type d’atelier"
+                value={context.needLabel}
+                variant={variant}
+              />
+            ) : null}
             <BookingSummaryItem
               label="Prestation"
               value={selectedOption.service_type.name || context.serviceTypeName}
+              variant={variant}
             />
             <BookingSummaryItem
               label="Atelier"
               value={selectedOption.workshop_name}
+              variant={variant}
             />
             <BookingSummaryItem
               label="Showroom"
               value={selectedOption.showroom.name}
+              variant={variant}
             />
             <BookingSummaryItem
               label="Date"
               value={formatBookingDate(selectedOption.requested_date)}
+              variant={variant}
             />
             <BookingSummaryItem
               label="Heure"
               value={formatBookingTime(selectedOption.requested_time)}
+              variant={variant}
             />
           </View>
 
           <View style={styles.bookingSummaryGrid}>
-            <BookingSummaryItem label="Client" value={contacts.name} />
+            <BookingSummaryItem
+              label="Client"
+              value={contacts.name}
+              variant={variant}
+            />
             <BookingSummaryItem
               label="E-mail"
               value={contacts.email ?? 'Non renseigné'}
+              variant={variant}
             />
             <BookingSummaryItem
               label="Téléphone"
               value={contacts.phone ?? 'Non renseigné'}
+              variant={variant}
             />
             <BookingSummaryItem
               label="Adresse"
               value={contacts.address ?? 'Non renseignée'}
+              variant={variant}
             />
           </View>
 
@@ -3608,34 +5474,215 @@ function AiBookingPanel({
             </Text>
           ) : null}
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{
-              disabled: isBookingPending || selectedOptionExpired,
-            }}
-            disabled={isBookingPending || selectedOptionExpired}
-            onPress={handleConfirmation}
-            style={({ hovered, pressed }) => [
-              styles.bookingPrimaryAction,
-              hovered && !isBookingPending && !selectedOptionExpired &&
-                styles.bookingPrimaryActionHovered,
-              pressed && styles.pressed,
-              (isBookingPending || selectedOptionExpired) && styles.disabled,
-            ]}
-          >
-            <Text style={styles.bookingPrimaryActionText}>
-              {confirmationMutation.isPending
-                ? 'Confirmation en cours…'
-                : 'Confirmer la demande de rendez-vous'}
-            </Text>
-          </Pressable>
+          {isClassic ? (
+            <ClassicBookingWizardActions
+              canContinue={!selectedOptionExpired}
+              isPending={isBookingPending}
+              onBack={() => {
+                onClassicStepChange?.(6);
+              }}
+              onContinue={handleConfirmation}
+              primaryLabel="Confirmer mon rendez-vous"
+            />
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{
+                disabled: isBookingPending || selectedOptionExpired,
+              }}
+              disabled={isBookingPending || selectedOptionExpired}
+              onPress={handleConfirmation}
+              style={({ hovered, pressed }) => [
+                styles.bookingPrimaryAction,
+                hovered && !isBookingPending && !selectedOptionExpired &&
+                  styles.bookingPrimaryActionHovered,
+                pressed && styles.pressed,
+                (isBookingPending || selectedOptionExpired) && styles.disabled,
+              ]}
+            >
+              <Text style={styles.bookingPrimaryActionText}>
+                {confirmationMutation.isPending
+                  ? 'Confirmation en cours…'
+                  : 'Confirmer la demande de rendez-vous'}
+              </Text>
+            </Pressable>
+          )}
         </View>
       ) : null}
 
-      <BookingResetButton
-        disabled={isBookingPending}
-        onReset={onChangeJourney}
-      />
+      {!isClassic ? (
+        <BookingResetButton
+          disabled={isBookingPending}
+          onReset={onChangeJourney}
+          variant={variant}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function ClassicBookingWizardProgress({
+  currentStep,
+}: {
+  currentStep: ClassicBookingStep;
+}) {
+  const progress = Math.round(
+    (currentStep / CLASSIC_BOOKING_STEPS.length) * 100
+  );
+  const currentDescription =
+    CLASSIC_BOOKING_STEPS[currentStep - 1]?.description ?? '';
+
+  return (
+    <>
+      <View style={styles.classicWizardHeader}>
+        <View style={styles.classicWizardHeaderCopy}>
+          <Text style={styles.classicWizardEyebrow}>Conciergerie atelier</Text>
+          <Text style={styles.classicWizardTitle}>
+            Planifiez votre visite SMEIA
+          </Text>
+          <Text style={styles.classicWizardDescription}>
+            {currentDescription}
+          </Text>
+        </View>
+        <View style={styles.classicWizardProgressBlock}>
+          <View style={styles.classicWizardProgressLabels}>
+            <Text style={styles.classicWizardProgressText}>
+              Étape {currentStep} sur {CLASSIC_BOOKING_STEPS.length}
+            </Text>
+            <Text style={styles.classicWizardProgressText}>{progress} %</Text>
+          </View>
+          <View style={styles.classicWizardProgressTrack}>
+            <View
+              style={[
+                styles.classicWizardProgressFill,
+                { width: `${progress}%` },
+              ]}
+            />
+          </View>
+        </View>
+      </View>
+
+      <ScrollView
+        horizontal
+        contentContainerStyle={styles.classicWizardSteps}
+        showsHorizontalScrollIndicator={false}
+        style={styles.classicWizardStepsScroll}
+      >
+        {CLASSIC_BOOKING_STEPS.map((step, index) => {
+          const stepNumber = (index + 1) as ClassicBookingStep;
+          const active = stepNumber === currentStep;
+          const complete = stepNumber < currentStep;
+
+          return (
+            <View key={step.label} style={styles.classicWizardStepWrapper}>
+              <View
+                accessibilityLabel={`Étape ${stepNumber} sur 6 : ${step.label}${active ? ', étape actuelle' : complete ? ', terminée' : ''}`}
+                style={styles.classicWizardStep}
+              >
+              <View
+                style={[
+                  styles.classicWizardStepIndex,
+                  (active || complete) && styles.classicWizardStepIndexActive,
+                ]}
+              >
+                <SymbolView
+                  name={
+                    complete
+                      ? { ios: 'checkmark', android: 'check', web: 'check' }
+                      : step.icon
+                  }
+                  size={17}
+                  tintColor={active || complete ? '#FFFFFF' : '#8A97A8'}
+                />
+              </View>
+              <View style={styles.classicWizardStepCopy}>
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.classicWizardStepLabel,
+                    complete && styles.classicWizardStepLabelComplete,
+                    active && styles.classicWizardStepLabelActive,
+                  ]}
+                >
+                  {step.label}
+                </Text>
+                {active ? (
+                  <Text style={styles.classicWizardStepCurrent}>En cours</Text>
+                ) : null}
+              </View>
+              </View>
+              {index < CLASSIC_BOOKING_STEPS.length - 1 ? (
+                <View
+                  style={[
+                    styles.classicWizardStepConnector,
+                    complete && styles.classicWizardStepConnectorComplete,
+                  ]}
+                />
+              ) : null}
+            </View>
+          );
+        })}
+      </ScrollView>
+    </>
+  );
+}
+
+function ClassicBookingWizardActions({
+  canContinue,
+  isPending,
+  onBack,
+  onContinue,
+  primaryLabel = 'Continuer',
+}: {
+  canContinue: boolean;
+  isPending: boolean;
+  onBack: () => void;
+  onContinue: () => void;
+  primaryLabel?: string;
+}) {
+  return (
+    <View style={styles.classicWizardActions}>
+      <Pressable
+        accessibilityRole="button"
+        disabled={isPending}
+        onPress={onBack}
+        style={({ hovered, pressed }) => [
+          styles.classicWizardSecondaryAction,
+          hovered && !isPending && styles.classicSecondaryActionHovered,
+          pressed && !isPending && styles.pressed,
+          isPending && styles.disabled,
+        ]}
+      >
+        <SymbolView
+          name={{ ios: 'arrow.left', android: 'arrow_back', web: 'arrow_back' }}
+          size={16}
+          tintColor="#2F5FA6"
+        />
+        <Text style={styles.classicWizardSecondaryActionText}>Précédent</Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        disabled={!canContinue || isPending}
+        onPress={onContinue}
+        style={({ hovered, pressed }) => [
+          styles.classicWizardPrimaryAction,
+          hovered && canContinue && !isPending &&
+            styles.classicPrimaryActionHovered,
+          pressed && canContinue && !isPending && styles.pressed,
+          (!canContinue || isPending) && styles.disabled,
+        ]}
+      >
+        <Text style={styles.bookingPrimaryActionText}>
+          {isPending ? 'Traitement en cours…' : primaryLabel}
+        </Text>
+        {!isPending ? (
+          <SymbolView
+            name={{ ios: 'arrow.right', android: 'arrow_forward', web: 'arrow_forward' }}
+            size={16}
+            tintColor="#FFFFFF"
+          />
+        ) : null}
+      </Pressable>
     </View>
   );
 }
@@ -3643,10 +5690,14 @@ function AiBookingPanel({
 function BookingResetButton({
   disabled,
   onReset,
+  variant = 'ai',
 }: {
   disabled: boolean;
   onReset: () => void;
+  variant?: SecureManualBookingVariant;
 }) {
+  const styles = getSecureManualBookingStyles(variant);
+
   return (
     <Pressable
       accessibilityRole="button"
@@ -3670,6 +5721,7 @@ type BookingChoiceButtonProps = {
   label: string;
   onPress: () => void;
   selected: boolean;
+  variant?: SecureManualBookingVariant;
 };
 
 function BookingChoiceButton({
@@ -3677,7 +5729,10 @@ function BookingChoiceButton({
   label,
   onPress,
   selected,
+  variant = 'ai',
 }: BookingChoiceButtonProps) {
+  const styles = getSecureManualBookingStyles(variant);
+
   return (
     <Pressable
       accessibilityRole="button"
@@ -3708,13 +5763,17 @@ function BookingExpansionAction({
   disabled,
   label,
   subtitle,
+  variant = 'ai',
   onPress,
 }: {
   disabled: boolean;
   label: string;
   subtitle: string;
+  variant?: SecureManualBookingVariant;
   onPress: () => void;
 }) {
+  const styles = getSecureManualBookingStyles(variant);
+
   return (
     <Pressable
       accessibilityLabel={`${label}. ${subtitle}`}
@@ -3735,7 +5794,17 @@ function BookingExpansionAction({
   );
 }
 
-function BookingDetailLine({ label, value }: { label: string; value: string }) {
+function BookingDetailLine({
+  label,
+  value,
+  variant = 'ai',
+}: {
+  label: string;
+  value: string;
+  variant?: SecureManualBookingVariant;
+}) {
+  const styles = getSecureManualBookingStyles(variant);
+
   return (
     <View style={styles.bookingDetailLine}>
       <Text style={styles.bookingDetailLabel}>{label}</Text>
@@ -3744,7 +5813,16 @@ function BookingDetailLine({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BookingSummaryItem({ label, value }: { label: string; value: string }) {
+function BookingSummaryItem({
+  label,
+  value,
+  variant = 'ai',
+}: {
+  label: string;
+  value: string;
+  variant?: SecureManualBookingVariant;
+}) {
+  const styles = getSecureManualBookingStyles(variant);
   const { width } = useWindowDimensions();
 
   return (
@@ -3916,9 +5994,17 @@ type SectionIntroProps = {
   kicker: string;
   title: string;
   text: string;
+  variant?: SecureManualBookingVariant;
 };
 
-function SectionIntro({ kicker, title, text }: SectionIntroProps) {
+function SectionIntro({
+  kicker,
+  title,
+  text,
+  variant = 'ai',
+}: SectionIntroProps) {
+  const styles = getSecureManualBookingStyles(variant);
+
   return (
     <View style={styles.sectionIntro}>
       <Text style={styles.sectionKicker}>{kicker}</Text>
@@ -3931,10 +6017,14 @@ function SectionIntro({ kicker, title, text }: SectionIntroProps) {
 function ControlledErrorPanel({
   message,
   title,
+  variant = 'ai',
 }: {
   message: string;
   title: string;
+  variant?: SecureManualBookingVariant;
 }) {
+  const styles = getSecureManualBookingStyles(variant);
+
   return (
     <View accessibilityLiveRegion="polite" style={styles.submitErrorBox}>
       <View style={styles.errorIcon}>
@@ -3952,6 +6042,7 @@ type SelectableVehicleCardProps = {
   active: boolean;
   disabled: boolean;
   vehicle: VehicleListItem;
+  variant?: SecureManualBookingVariant;
   onPress: () => void;
 };
 
@@ -3959,8 +6050,10 @@ function SelectableVehicleCard({
   active,
   disabled,
   vehicle,
+  variant = 'ai',
   onPress,
 }: SelectableVehicleCardProps) {
+  const styles = getSecureManualBookingStyles(variant);
   const vehicleMeta = getVehicleMeta(vehicle);
 
   return (
@@ -4037,9 +6130,12 @@ function ResultMetric({
 type EmptyPanelProps = {
   title: string;
   text: string;
+  variant?: SecureManualBookingVariant;
 };
 
-function EmptyPanel({ title, text }: EmptyPanelProps) {
+function EmptyPanel({ title, text, variant = 'ai' }: EmptyPanelProps) {
+  const styles = getSecureManualBookingStyles(variant);
+
   return (
     <View style={styles.emptyPanel}>
       <Text style={styles.emptyTitle}>{title}</Text>
@@ -6107,6 +8203,741 @@ const styles = StyleSheet.create({
     fontWeight: typography.fontWeight.semiBold,
     textAlign: 'center',
   },
+  classicWizardHeader: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.lg,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: '#26344C',
+    borderRadius: 20,
+    backgroundColor: '#0B1220',
+  },
+  classicWizardHeaderCopy: {
+    flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    gap: spacing.xs,
+  },
+  classicWizardEyebrow: {
+    color: '#8FB7E8',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+    textTransform: 'uppercase',
+  },
+  classicWizardTitle: {
+    color: '#FFFFFF',
+    fontSize: typography.fontSize.xxl,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicWizardDescription: {
+    maxWidth: 680,
+    color: '#D9E5F5',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+  classicWizardProgressBlock: {
+    width: 250,
+    maxWidth: '100%',
+    gap: spacing.sm,
+  },
+  classicWizardProgressLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  classicWizardProgressText: {
+    color: '#D9E5F5',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicWizardProgressTrack: {
+    width: '100%',
+    height: 7,
+    overflow: 'hidden',
+    borderRadius: 7,
+    backgroundColor: '#26344C',
+  },
+  classicWizardProgressFill: {
+    height: '100%',
+    borderRadius: 7,
+    backgroundColor: '#72B7FF',
+  },
+  classicWizardStepsScroll: {
+    flexGrow: 0,
+    borderWidth: 1,
+    borderColor: '#E6EAF2',
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+  },
+  classicWizardSteps: {
+    minWidth: '100%',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.sm,
+  },
+  classicWizardStepWrapper: {
+    minWidth: 172,
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  classicWizardStep: {
+    minWidth: 138,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.xs,
+    borderRadius: 12,
+  },
+  classicWizardStepIndex: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#D5DCE8',
+    borderRadius: 17,
+    backgroundColor: '#F7F9FC',
+  },
+  classicWizardStepIndexActive: {
+    backgroundColor: '#2F5FA6',
+    borderColor: '#2F5FA6',
+  },
+  classicWizardStepCopy: {
+    minWidth: 0,
+    flex: 1,
+    gap: 2,
+  },
+  classicWizardStepLabel: {
+    color: '#8A97A8',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+  classicWizardStepLabelComplete: {
+    color: '#2F7D67',
+  },
+  classicWizardStepLabelActive: {
+    color: '#2F5FA6',
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicWizardStepCurrent: {
+    color: '#2F5FA6',
+    fontSize: 10,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicWizardStepConnector: {
+    flex: 1,
+    minWidth: 20,
+    height: 2,
+    backgroundColor: '#DDE3EC',
+  },
+  classicWizardStepConnectorComplete: {
+    backgroundColor: '#7EB7A4',
+  },
+  classicWizardWorkspace: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.lg,
+  },
+  classicWizardWorkspaceNarrow: {
+    flexDirection: 'column',
+  },
+  classicCardSurface: {
+    borderWidth: 1,
+    borderColor: '#D8E2F0',
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#15294D',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 2,
+  },
+  classicWizardFormColumn: {
+    flex: 1,
+    minWidth: 0,
+    gap: spacing.md,
+  },
+  classicWizardFormPanel: {
+    minHeight: 430,
+    gap: spacing.lg,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: '#E6EAF2',
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+  },
+  classicWizardStepContent: {
+    gap: spacing.lg,
+  },
+  classicDateTimeHeader: {
+    gap: spacing.xs,
+  },
+  classicDateTimeLayout: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.lg,
+  },
+  classicDateTimeLayoutNarrow: {
+    flexDirection: 'column',
+  },
+  classicCalendarColumn: {
+    flex: 1.1,
+    width: '100%',
+    minWidth: 0,
+    gap: spacing.sm,
+  },
+  classicHoursPanel: {
+    flex: 0.9,
+    width: '100%',
+    minWidth: 0,
+    minHeight: 430,
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: 18,
+  },
+  classicHoursHeader: {
+    paddingBottom: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E6EAF2',
+  },
+  classicHoursEmpty: {
+    minHeight: 150,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#C8D5E6',
+    borderRadius: 16,
+    backgroundColor: '#F8FAFC',
+  },
+  classicAvailabilityErrorBlock: {
+    gap: spacing.sm,
+  },
+  classicClosestDayNotice: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#C8D9EC',
+    borderRadius: 16,
+    backgroundColor: '#EDF4FF',
+  },
+  classicClosestDayCopy: {
+    flex: 1,
+    minWidth: 240,
+    gap: spacing.xs,
+  },
+  classicClosestDayTitle: {
+    color: '#15294D',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicClosestDayText: {
+    color: '#46617F',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+  classicWizardActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: '#E3EAF2',
+  },
+  classicWizardSecondaryAction: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 130,
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderWidth: 1,
+    borderColor: '#AFC4DF',
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+  },
+  classicWizardSecondaryActionText: {
+    color: '#2F5FA6',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicWizardPrimaryAction: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 170,
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderWidth: 1,
+    borderColor: '#2F5FA6',
+    borderRadius: 14,
+    backgroundColor: '#2F5FA6',
+    shadowColor: '#2F5FA6',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  classicVehicleGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+  },
+  classicVehicleChoice: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 280,
+    minWidth: 0,
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E6EAF2',
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    transform: [{ scale: 0.995 }],
+  },
+  classicVehicleChoiceActive: {
+    borderWidth: 2,
+    borderColor: '#7FA5D4',
+    backgroundColor: '#F1F6FD',
+    shadowColor: '#2F5FA6',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.1,
+    shadowRadius: 18,
+    transform: [{ scale: 1 }],
+  },
+  classicChoiceHovered: {
+    borderColor: '#BFD2EC',
+    backgroundColor: '#F7FAFF',
+  },
+  classicChoicePressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.985 }],
+  },
+  classicVehicleChoiceTopline: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  classicVehicleLogoFrame: {
+    width: 74,
+    height: 58,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.xs,
+    borderRadius: 14,
+    backgroundColor: '#0B1220',
+  },
+  classicVehicleLogoFrameLight: {
+    borderWidth: 1,
+    borderColor: '#D7E0EC',
+    backgroundColor: '#FFFFFF',
+  },
+  classicVehicleLogo: { width: '100%', height: '100%' },
+  classicSelectedCheck: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 14,
+    backgroundColor: '#2F5FA6',
+  },
+  classicVehicleName: {
+    color: '#15294D',
+    fontSize: typography.fontSize.lg,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicVehicleRegistration: {
+    color: '#2F5FA6',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicVehicleFacts: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  classicVehicleFact: {
+    color: '#5A6470',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.semiBold,
+  },
+  classicVehicleVin: {
+    color: '#7A8798',
+    fontSize: typography.fontSize.xs,
+  },
+  classicVerificationGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+  },
+  classicInfoPanel: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 300,
+    minWidth: 0,
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E6EAF2',
+    borderRadius: 18,
+    backgroundColor: '#F8FAFC',
+  },
+  classicInfoPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E6EAF2',
+  },
+  classicInfoPanelIcon: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: '#EAF2FC',
+  },
+  classicInfoPanelTitle: {
+    flex: 1,
+    color: '#15294D',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicInfoLine: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    paddingVertical: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E6EAF2',
+  },
+  classicInfoLabel: {
+    flex: 0.8,
+    color: '#5A6470',
+    fontSize: typography.fontSize.sm,
+  },
+  classicInfoValue: {
+    flex: 1.2,
+    color: '#15294D',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.semiBold,
+    textAlign: 'right',
+  },
+  classicPrivacyNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: 14,
+    backgroundColor: '#EDF4FF',
+  },
+  classicPrivacyText: {
+    flex: 1,
+    color: '#46617F',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+  classicFieldLabel: {
+    color: '#15294D',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicChoiceList: { gap: spacing.sm },
+  classicCompactChoice: {
+    minHeight: 74,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#D8E2F0',
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+  },
+  classicCompactChoiceActive: {
+    borderWidth: 2,
+    borderColor: '#2F5FA6',
+    backgroundColor: '#EDF4FC',
+    shadowColor: '#2F5FA6',
+    shadowOpacity: 0.12,
+  },
+  classicChoiceIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: '#EDF4FF',
+  },
+  classicChoiceIconActive: { backgroundColor: '#2F5FA6' },
+  classicChoiceCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
+  classicChoiceTitle: {
+    color: '#15294D',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicChoiceMeta: {
+    color: '#5A6470',
+    fontSize: typography.fontSize.xs,
+  },
+  classicChoiceIndicator: {
+    width: 25,
+    height: 25,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#B8C7D9',
+    borderRadius: 13,
+    backgroundColor: '#FFFFFF',
+  },
+  classicChoiceIndicatorActive: {
+    borderColor: '#2F5FA6',
+    backgroundColor: '#2F5FA6',
+  },
+  classicAutomaticNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: 14,
+    backgroundColor: '#EDF4FF',
+  },
+  classicAutomaticNoticeText: {
+    flex: 1,
+    color: '#46617F',
+    fontSize: typography.fontSize.sm,
+    lineHeight: typography.lineHeight.sm,
+  },
+  classicAutomaticSelection: {
+    gap: spacing.xs,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E6EAF2',
+    borderRadius: 18,
+    backgroundColor: '#F8FAFC',
+  },
+  classicSummaryColumn: {
+    width: 340,
+    maxWidth: '100%',
+    flexShrink: 0,
+    alignSelf: 'flex-start',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E6EAF2',
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+  },
+  classicSummaryColumnCompact: { width: '100%' },
+  classicSummaryHeader: { minHeight: 44, gap: spacing.xs },
+  classicSummaryEyebrow: {
+    color: '#2F5FA6',
+    fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+    textTransform: 'uppercase',
+  },
+  classicSummaryTitle: {
+    color: '#15294D',
+    fontSize: typography.fontSize.md,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicSummaryContent: { gap: spacing.sm },
+  classicSummaryVehicle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: 16,
+    backgroundColor: '#0B1220',
+  },
+  classicSummaryLogoFrame: {
+    width: 54,
+    height: 54,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.xs,
+  },
+  classicSummaryLogoFrameLight: {
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+  },
+  classicSummaryLogo: { width: '100%', height: '100%' },
+  classicSummaryVehicleCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
+  classicSummaryVehicleName: {
+    color: '#FFFFFF',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicSummaryVehicleMeta: {
+    color: '#AFC3DC',
+    fontSize: typography.fontSize.xs,
+  },
+  classicSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEF2F7',
+  },
+  classicSummaryRowIcon: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 9,
+    backgroundColor: '#EDF4FF',
+  },
+  classicSummaryRowCopy: { flex: 1, minWidth: 0, gap: 2 },
+  classicSummaryRowLabel: {
+    color: '#7A8798',
+    fontSize: typography.fontSize.xs,
+  },
+  classicSummaryRowValue: {
+    color: '#15294D',
+    fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold,
+  },
+  classicSummaryRowMeta: {
+    color: '#5A6470',
+    fontSize: typography.fontSize.xs,
+  },
+  classicPanel: {
+    borderColor: '#D8E2F0',
+    backgroundColor: '#FFFFFF',
+    experimental_backgroundImage: 'none',
+    shadowColor: '#15294D',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 20,
+    elevation: 2,
+  },
+  classicSurface: {
+    borderColor: '#D8E2F0',
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#15294D',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    elevation: 1,
+  },
+  classicMutedSurface: {
+    borderColor: '#DDE5EF',
+    backgroundColor: '#F8FAFC',
+  },
+  classicSelectedSurface: {
+    borderColor: '#7FA5D4',
+    backgroundColor: '#EDF4FC',
+    shadowColor: '#2F5FA6',
+    shadowOpacity: 0.1,
+  },
+  classicHoveredSurface: {
+    borderColor: '#AFC6E2',
+    backgroundColor: '#F4F8FD',
+  },
+  classicPrimaryText: {
+    color: '#15294D',
+  },
+  classicSecondaryText: {
+    color: '#5A6470',
+  },
+  classicAccentText: {
+    color: '#2F5FA6',
+  },
+  classicInput: {
+    borderColor: '#C8D5E6',
+    backgroundColor: '#FFFFFF',
+    color: '#15294D',
+  },
+  classicPrimaryAction: {
+    borderColor: '#2F5FA6',
+    backgroundColor: '#2F5FA6',
+    shadowColor: '#2F5FA6',
+    shadowOpacity: 0.14,
+  },
+  classicPrimaryActionHovered: {
+    borderColor: '#244B86',
+    backgroundColor: '#244B86',
+  },
+  classicSecondaryAction: {
+    borderColor: '#AFC4DF',
+    backgroundColor: '#FFFFFF',
+  },
+  classicSecondaryActionHovered: {
+    borderColor: '#7FA5D4',
+    backgroundColor: '#F4F8FD',
+  },
+  classicSelectionDot: {
+    borderColor: '#8CA6C3',
+    backgroundColor: '#FFFFFF',
+  },
+  classicSelectionDotSelected: {
+    borderColor: '#2F5FA6',
+    backgroundColor: '#DCEAF9',
+  },
+  classicProgressIndex: {
+    backgroundColor: '#E4EBF4',
+  },
+  classicProgressIndexHighlighted: {
+    backgroundColor: '#2F5FA6',
+  },
+  classicSuccessSurface: {
+    borderColor: '#B9DCCF',
+    backgroundColor: '#F4FBF8',
+  },
+  classicSuccessBadge: {
+    borderColor: '#7EB7A4',
+    backgroundColor: '#E4F4EE',
+  },
+  classicSuccessText: {
+    color: '#2F7D67',
+  },
+  classicWarningSurface: {
+    borderColor: '#E4C98E',
+    backgroundColor: '#FFF9EC',
+  },
+  classicWarningText: {
+    color: '#765B22',
+  },
+  classicDangerSurface: {
+    borderColor: '#E6B6B6',
+    backgroundColor: '#FFF5F5',
+  },
+  classicDangerIcon: {
+    backgroundColor: '#FBE0E0',
+  },
+  classicDangerText: {
+    color: '#8D3535',
+  },
+  classicDivider: {
+    borderColor: '#E3EAF2',
+    borderTopColor: '#E3EAF2',
+    borderBottomColor: '#E3EAF2',
+  },
+  classicProblemSummary: {
+    borderLeftColor: '#2F5FA6',
+    backgroundColor: '#F8FAFC',
+  },
   pressed: {
     opacity: 0.86,
   },
@@ -6114,3 +8945,149 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
 });
+
+const classicSecureManualBookingStyleLayers = {
+  ...styles,
+  mainPanel: [styles.mainPanel, styles.classicPanel],
+  sectionKicker: [styles.sectionKicker, styles.classicAccentText],
+  sectionTitle: [styles.sectionTitle, styles.classicPrimaryText],
+  sectionText: [styles.sectionText, styles.classicSecondaryText],
+  vehicleCard: [styles.vehicleCard, styles.classicSurface],
+  vehicleCardActive: [styles.vehicleCardActive, styles.classicSelectedSurface],
+  vehicleCardHovered: [styles.vehicleCardHovered, styles.classicHoveredSurface],
+  vehicleBrand: [styles.vehicleBrand, styles.classicAccentText],
+  vehicleModel: [styles.vehicleModel, styles.classicPrimaryText],
+  vehicleMeta: [styles.vehicleMeta, styles.classicSecondaryText],
+  registrationBadge: [styles.registrationBadge, styles.classicMutedSurface],
+  registrationText: [styles.registrationText, styles.classicPrimaryText],
+  input: [styles.input, styles.classicInput],
+  fieldHint: [styles.fieldHint, styles.classicSecondaryText],
+  characterCount: [styles.characterCount, styles.classicSecondaryText],
+  emptyPanel: [styles.emptyPanel, styles.classicMutedSurface],
+  emptyTitle: [styles.emptyTitle, styles.classicPrimaryText],
+  emptyText: [styles.emptyText, styles.classicSecondaryText],
+  submitErrorBox: [styles.submitErrorBox, styles.classicDangerSurface],
+  errorIcon: [styles.errorIcon, styles.classicDangerIcon],
+  errorIconText: [styles.errorIconText, styles.classicDangerText],
+  submitErrorTitle: [styles.submitErrorTitle, styles.classicDangerText],
+  submitErrorText: [styles.submitErrorText, styles.classicDangerText],
+  manualNeedCard: [styles.manualNeedCard, styles.classicSurface],
+  bookingShell: [
+    styles.bookingShell,
+    styles.classicPanel,
+    styles.classicCardSurface,
+  ],
+  bookingSuccessShell: [styles.bookingSuccessShell, styles.classicSuccessSurface],
+  bookingSuccessBadge: [styles.bookingSuccessBadge, styles.classicSuccessBadge],
+  bookingSuccessBadgeText: [styles.bookingSuccessBadgeText, styles.classicSuccessText],
+  bookingKicker: [styles.bookingKicker, styles.classicAccentText],
+  bookingTitle: [styles.bookingTitle, styles.classicPrimaryText],
+  bookingLead: [styles.bookingLead, styles.classicSecondaryText],
+  bookingPendingBadge: [styles.bookingPendingBadge, styles.classicMutedSurface],
+  bookingPendingBadgeText: [styles.bookingPendingBadgeText, styles.classicAccentText],
+  bookingProgress: [styles.bookingProgress, styles.classicMutedSurface],
+  bookingProgressItem: [styles.bookingProgressItem, styles.classicSurface],
+  bookingProgressItemActive: [styles.bookingProgressItemActive, styles.classicSelectedSurface],
+  bookingProgressItemComplete: [styles.bookingProgressItemComplete, styles.classicMutedSurface],
+  bookingProgressIndex: [styles.bookingProgressIndex, styles.classicProgressIndex],
+  bookingProgressIndexHighlighted: [styles.bookingProgressIndexHighlighted, styles.classicProgressIndexHighlighted],
+  bookingProgressIndexText: [styles.bookingProgressIndexText, styles.classicSecondaryText],
+  bookingProgressLabel: [styles.bookingProgressLabel, styles.classicSecondaryText],
+  bookingProgressLabelHighlighted: [styles.bookingProgressLabelHighlighted, styles.classicAccentText],
+  bookingSection: [
+    styles.bookingSection,
+    styles.classicSurface,
+    styles.classicCardSurface,
+  ],
+  bookingConfirmationSection: [styles.bookingConfirmationSection, styles.classicSelectedSurface],
+  bookingSectionKicker: [styles.bookingSectionKicker, styles.classicAccentText],
+  bookingSectionTitle: [styles.bookingSectionTitle, styles.classicPrimaryText],
+  bookingSectionText: [styles.bookingSectionText, styles.classicSecondaryText],
+  bookingWorkshopCard: [styles.bookingWorkshopCard, styles.classicSurface],
+  bookingWorkshopCardSelected: [styles.bookingWorkshopCardSelected, styles.classicSelectedSurface],
+  bookingWorkshopCardHovered: [styles.bookingWorkshopCardHovered, styles.classicHoveredSurface],
+  bookingSelectionDot: [styles.bookingSelectionDot, styles.classicSelectionDot],
+  bookingSelectionDotSelected: [styles.bookingSelectionDotSelected, styles.classicSelectionDotSelected],
+  bookingSmallLabel: [styles.bookingSmallLabel, styles.classicAccentText],
+  bookingWorkshopName: [styles.bookingWorkshopName, styles.classicPrimaryText],
+  bookingEmptyText: [styles.bookingEmptyText, styles.classicSecondaryText],
+  bookingChoiceButton: [
+    styles.bookingChoiceButton,
+    styles.classicSecondaryAction,
+    styles.classicCardSurface,
+  ],
+  bookingChoiceButtonSelected: [styles.bookingChoiceButtonSelected, styles.classicSelectedSurface],
+  bookingChoiceButtonHovered: [styles.bookingChoiceButtonHovered, styles.classicHoveredSurface],
+  bookingChoiceButtonText: [styles.bookingChoiceButtonText, styles.classicSecondaryText],
+  bookingChoiceButtonTextSelected: [styles.bookingChoiceButtonTextSelected, styles.classicAccentText],
+  bookingFieldLabel: [styles.bookingFieldLabel, styles.classicPrimaryText],
+  bookingPrimaryAction: [styles.bookingPrimaryAction, styles.classicPrimaryAction],
+  bookingPrimaryActionHovered: [styles.bookingPrimaryActionHovered, styles.classicPrimaryActionHovered],
+  bookingSecondaryAction: [styles.bookingSecondaryAction, styles.classicSecondaryAction],
+  bookingSecondaryActionHovered: [styles.bookingSecondaryActionHovered, styles.classicSecondaryActionHovered],
+  bookingSecondaryActionText: [styles.bookingSecondaryActionText, styles.classicAccentText],
+  bookingExpansionGrid: [styles.bookingExpansionGrid, styles.classicDivider],
+  bookingExpansionAction: [styles.bookingExpansionAction, styles.classicSecondaryAction],
+  bookingExpansionActionHovered: [styles.bookingExpansionActionHovered, styles.classicSecondaryActionHovered],
+  bookingExpansionActionLabel: [styles.bookingExpansionActionLabel, styles.classicPrimaryText],
+  bookingExpansionActionSubtitle: [styles.bookingExpansionActionSubtitle, styles.classicSecondaryText],
+  bookingDayDate: [styles.bookingDayDate, styles.classicAccentText],
+  bookingDayGroup: [
+    styles.bookingDayGroup,
+    styles.classicMutedSurface,
+    styles.classicCardSurface,
+  ],
+  bookingDayGroupHeader: [styles.bookingDayGroupHeader, styles.classicDivider],
+  bookingDayShowroom: [styles.bookingDayShowroom, styles.classicSecondaryText],
+  bookingTimeChip: [
+    styles.bookingTimeChip,
+    styles.classicSecondaryAction,
+    styles.classicCardSurface,
+  ],
+  bookingTimeChipHovered: [styles.bookingTimeChipHovered, styles.classicHoveredSurface],
+  bookingTimeChipSelected: [styles.bookingTimeChipSelected, styles.classicSelectedSurface],
+  bookingTimeChipText: [styles.bookingTimeChipText, styles.classicPrimaryText],
+  bookingTimeChipTextSelected: [styles.bookingTimeChipTextSelected, styles.classicAccentText],
+  bookingAlternativeNotice: [styles.bookingAlternativeNotice, styles.classicWarningSurface],
+  bookingAlternativeText: [styles.bookingAlternativeText, styles.classicWarningText],
+  bookingOptionCard: [
+    styles.bookingOptionCard,
+    styles.classicSurface,
+    styles.classicCardSurface,
+  ],
+  bookingOptionCardSelected: [styles.bookingOptionCardSelected, styles.classicSelectedSurface],
+  bookingOptionCardHovered: [styles.bookingOptionCardHovered, styles.classicHoveredSurface],
+  bookingOptionDate: [styles.bookingOptionDate, styles.classicPrimaryText],
+  bookingAvailableBadge: [styles.bookingAvailableBadge, styles.classicSuccessBadge],
+  bookingAvailableBadgeText: [styles.bookingAvailableBadgeText, styles.classicSuccessText],
+  bookingExpiredBadge: [styles.bookingExpiredBadge, styles.classicDangerSurface],
+  bookingExpiredBadgeText: [styles.bookingExpiredBadgeText, styles.classicDangerText],
+  bookingOptionTime: [styles.bookingOptionTime, styles.classicAccentText],
+  bookingOptionService: [styles.bookingOptionService, styles.classicPrimaryText],
+  bookingDetailLine: [styles.bookingDetailLine, styles.classicDivider],
+  bookingDetailLabel: [styles.bookingDetailLabel, styles.classicSecondaryText],
+  bookingDetailValue: [styles.bookingDetailValue, styles.classicPrimaryText],
+  bookingExpiredText: [styles.bookingExpiredText, styles.classicDangerText],
+  bookingSummaryItem: [
+    styles.bookingSummaryItem,
+    styles.classicMutedSurface,
+    styles.classicCardSurface,
+  ],
+  bookingSummaryLabel: [styles.bookingSummaryLabel, styles.classicSecondaryText],
+  bookingSummaryValue: [styles.bookingSummaryValue, styles.classicPrimaryText],
+  bookingProblemSummary: [styles.bookingProblemSummary, styles.classicProblemSummary],
+  bookingProblemSummaryText: [styles.bookingProblemSummaryText, styles.classicPrimaryText],
+  bookingFutureStatus: [styles.bookingFutureStatus, styles.classicSelectedSurface],
+  bookingFutureStatusText: [styles.bookingFutureStatusText, styles.classicPrimaryText],
+};
+
+const classicSecureManualBookingStyles = Object.fromEntries(
+  Object.entries(classicSecureManualBookingStyleLayers).map(([name, value]) => [
+    name,
+    StyleSheet.flatten(value as object),
+  ])
+) as unknown as typeof styles;
+
+function getSecureManualBookingStyles(variant: SecureManualBookingVariant) {
+  return variant === 'classic' ? classicSecureManualBookingStyles : styles;
+}

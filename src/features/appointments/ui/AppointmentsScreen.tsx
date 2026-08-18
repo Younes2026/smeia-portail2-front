@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
-import type { ComponentProps } from 'react';
+import { useState, type ComponentProps } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -10,10 +10,16 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
+import { ErrorState } from '@/components/feedback/ErrorState';
+import { LoadingState } from '@/components/feedback/LoadingState';
 import { ClientPortalLayout } from '@/components/layout/ClientPortalLayout';
+import { useServiceTypes } from '@/core/api/use-dictionaries';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { spacing } from '@/core/theme/spacing';
 import { typography } from '@/core/theme/typography';
+import { SecureManualBookingJourney } from '@/features/ai-diagnostic/ui/AiDiagnosticScreen';
+import { useVehicles } from '@/features/vehicles/hooks/useVehicles';
+import { useAuthStore } from '@/store/auth.store';
 
 type SymbolName = ComponentProps<typeof SymbolView>['name'];
 
@@ -21,20 +27,80 @@ export function AppointmentsScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isNarrow = width < breakpoints.tablet;
+  const [showClassicJourney, setShowClassicJourney] = useState(false);
+  const vehiclesQuery = useVehicles();
+  const serviceTypesQuery = useServiceTypes();
+  const user = useAuthStore((state) => state.user);
+  const customer = useAuthStore((state) => state.customer);
+  const clientName = getDisplayName(
+    customer?.firstName ?? user?.firstName,
+    customer?.lastName ?? user?.lastName,
+    customer?.email ?? user?.email
+  );
+
+  if (showClassicJourney && vehiclesQuery.isLoading) {
+    return (
+      <ClientPortalLayout activeRoute="/appointments">
+        <View style={styles.stateContainer}>
+          <LoadingState message="Chargement de vos véhicules..." />
+        </View>
+      </ClientPortalLayout>
+    );
+  }
+
+  if (showClassicJourney && vehiclesQuery.isError) {
+    return (
+      <ClientPortalLayout activeRoute="/appointments">
+        <View style={styles.stateContainer}>
+          <ErrorState
+            title="Erreur de chargement"
+            message="Impossible de charger vos véhicules pour préparer le rendez-vous."
+            onRetry={() => {
+              vehiclesQuery.refetch();
+            }}
+          />
+        </View>
+      </ClientPortalLayout>
+    );
+  }
+
+  if (showClassicJourney) {
+    return (
+      <ClientPortalLayout activeRoute="/appointments">
+        <ScrollView
+          style={styles.contentScroll}
+          contentContainerStyle={styles.manualJourneyContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator
+        >
+          <SecureManualBookingJourney
+            contacts={{
+              name: clientName,
+              email: customer?.email ?? user?.email ?? null,
+              phone: customer?.phone ?? null,
+              address: customer?.address ?? null,
+            }}
+            isNarrow={isNarrow}
+            isServiceTypesError={serviceTypesQuery.isError}
+            isServiceTypesLoading={serviceTypesQuery.isLoading}
+            onChangeJourney={() => {
+              setShowClassicJourney(false);
+            }}
+            serviceTypes={serviceTypesQuery.data ?? []}
+            variant="classic"
+            vehicles={vehiclesQuery.data ?? []}
+          />
+        </ScrollView>
+      </ClientPortalLayout>
+    );
+  }
 
   return (
     <ClientPortalLayout activeRoute="/appointments">
       <AppointmentJourneyChooser
         compact={isNarrow}
         onClassic={() => {
-          router.push({
-            pathname: '/ai-diagnostic',
-            params: {
-              mode: 'booking',
-              preparation: 'manual',
-              source: 'appointments',
-            },
-          });
+          setShowClassicJourney(true);
         }}
         onGuided={() => {
           router.push({
@@ -45,6 +111,16 @@ export function AppointmentsScreen() {
       />
     </ClientPortalLayout>
   );
+}
+
+function getDisplayName(
+  firstName?: string | null,
+  lastName?: string | null,
+  email?: string | null
+): string {
+  const fullName = `${firstName ?? ''} ${lastName ?? ''}`.trim();
+
+  return fullName || email || 'client SMEIA';
 }
 
 function AppointmentJourneyChooser({
@@ -150,7 +226,15 @@ function JourneyCard({
 }
 
 const styles = StyleSheet.create({
+  stateContainer: { flex: 1, justifyContent: 'center', padding: spacing.lg },
   contentScroll: { flex: 1, backgroundColor: '#F4F6FA' },
+  manualJourneyContent: {
+    width: '100%',
+    maxWidth: 1320,
+    alignSelf: 'center',
+    padding: spacing.md,
+    paddingBottom: spacing.xxl,
+  },
   journeyChooserContent: {
     width: '100%',
     maxWidth: 1120,

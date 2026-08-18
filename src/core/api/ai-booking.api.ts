@@ -5,7 +5,7 @@ import type {
 import { httpClient } from '@/core/api/http-client';
 
 export type AiBookingPreferredPeriod = 'any' | 'morning' | 'afternoon';
-export type AiBookingResultMode = 'suggestions' | 'day_slots';
+export type AiBookingResultMode = 'suggestions' | 'day_slots' | 'calendar';
 
 export type SearchAiAppointmentAvailabilityInput = {
   vehicle_id: number;
@@ -14,7 +14,16 @@ export type SearchAiAppointmentAvailabilityInput = {
   workshop_types: AiBookingWorkshopType[];
   preferred_date: string | null;
   preferred_period: AiBookingPreferredPeriod;
-  result_mode: AiBookingResultMode;
+  result_mode: Exclude<AiBookingResultMode, 'calendar'>;
+};
+
+export type SearchAiAppointmentCalendarInput = Omit<
+  SearchAiAppointmentAvailabilityInput,
+  'preferred_date' | 'preferred_period' | 'result_mode'
+> & {
+  preferred_date: null;
+  preferred_period: 'any';
+  result_mode: 'calendar';
 };
 
 export type AiBookingShowroom = {
@@ -44,6 +53,21 @@ export type AiBookingAvailabilityOption = {
 export type AiBookingAvailabilityResult = {
   preferred_date_available: boolean;
   options: AiBookingAvailabilityOption[];
+};
+
+export type AiBookingCalendarDay = {
+  date: string;
+  available_slot_count: number;
+  morning_slot_count: number;
+  afternoon_slot_count: number;
+};
+
+export type AiBookingCalendarResult = {
+  result_mode: 'calendar';
+  timezone: 'Africa/Casablanca';
+  horizon_start: string;
+  horizon_end: string;
+  days: AiBookingCalendarDay[];
 };
 
 export type ConfirmAiAppointmentInput = {
@@ -88,6 +112,16 @@ export function searchAiAppointmentAvailability(
   );
 }
 
+export function searchAiAppointmentCalendar(
+  input: SearchAiAppointmentCalendarInput
+) {
+  return httpClient.post<AiBookingCalendarResult>(
+    '/api/ai/appointments/availability',
+    input,
+    { destination: 'aiBackend' }
+  );
+}
+
 export function confirmAiAppointment({
   input,
   idempotencyKey,
@@ -106,5 +140,6 @@ export function confirmAiAppointment({
 
 export const aiBookingApi = {
   searchAiAppointmentAvailability,
+  searchAiAppointmentCalendar,
   confirmAiAppointment,
 };

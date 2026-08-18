@@ -29,13 +29,40 @@ type SuccessResponse<T> = {
 export class HttpError extends Error {
   status: number;
   code: string | null;
+  retryAfterSeconds: number | null;
 
-  constructor(message: string, status: number, code: string | null = null) {
+  constructor(
+    message: string,
+    status: number,
+    code: string | null = null,
+    retryAfterSeconds: number | null = null
+  ) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+function parseRetryAfter(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const seconds = Number(value);
+
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.ceil(seconds);
+  }
+
+  const retryDate = Date.parse(value);
+
+  if (!Number.isFinite(retryDate)) {
+    return null;
+  }
+
+  return Math.max(0, Math.ceil((retryDate - Date.now()) / 1_000));
 }
 
 function buildUrl(
@@ -204,7 +231,8 @@ async function request<T>(
     throw new HttpError(
       parsedError.message,
       response.status,
-      parsedError.code
+      parsedError.code,
+      parseRetryAfter(response.headers.get('Retry-After'))
     );
   }
 
