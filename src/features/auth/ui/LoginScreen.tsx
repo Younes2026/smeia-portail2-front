@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 
 import { PageContainer } from '@/components/layout/PageContainer';
+import { isDirectusCrcRole } from '@/core/auth/directus-roles';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { colors } from '@/core/theme/colors';
 import { spacing } from '@/core/theme/spacing';
@@ -79,11 +80,11 @@ const brandBackgrounds = [
   },
 ] as const;
 
-const premiumInfoItems: ReadonlyArray<{
+const premiumInfoItems: readonly {
   icon: SymbolName;
   title: string;
   subtitle: string;
-}> = [
+}[] = [
   {
     icon: { ios: 'clock', android: 'schedule', web: 'schedule' },
     title: 'Suivi en temps réel',
@@ -162,6 +163,7 @@ export function LoginScreen() {
   const customer = useAuthStore((state) => state.customer);
   const savAgent = useAuthStore((state) => state.savAgent);
   const technician = useAuthStore((state) => state.technician);
+  const user = useAuthStore((state) => state.user);
   const hasHydrated = useAuthStore((state) => state.hasHydrated);
   const login = useLogin();
   const [email, setEmail] = useState('');
@@ -172,8 +174,10 @@ export function LoginScreen() {
   const canSubmit =
     email.trim().length > 0 && password.length > 0 && !login.isPending;
   const hasProtectedSession = Boolean(
-    accessToken && (customer || savAgent || technician)
+    accessToken &&
+      (customer || savAgent || technician || isDirectusCrcRole(user?.role))
   );
+  const isCrcAgent = isDirectusCrcRole(user?.role);
   const panelTiltStyles = [
     styles.galleryPanelTiltOne,
     styles.galleryPanelTiltTwo,
@@ -185,6 +189,11 @@ export function LoginScreen() {
 
   useEffect(() => {
     if (!hasHydrated || !hasProtectedSession || login.isPending) {
+      return;
+    }
+
+    if (isCrcAgent) {
+      router.replace('/crc/requests' as never);
       return;
     }
 
@@ -203,6 +212,7 @@ export function LoginScreen() {
     customer,
     hasHydrated,
     hasProtectedSession,
+    isCrcAgent,
     login.isPending,
     router,
     savAgent,
@@ -221,6 +231,11 @@ export function LoginScreen() {
       },
       {
         onSuccess: (session) => {
+          if (isDirectusCrcRole(session.user?.role)) {
+            router.replace('/crc/requests' as never);
+            return;
+          }
+
           if (session.savAgent && !session.customer) {
             router.replace('/sav/dashboard');
             return;

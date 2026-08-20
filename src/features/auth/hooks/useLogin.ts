@@ -1,5 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 
+import { isDirectusCrcRole } from '@/core/auth/directus-roles';
 import { HttpError } from '@/core/api/http-client';
 import { authApi } from '@/features/auth/api/auth.api';
 import type {
@@ -107,6 +108,20 @@ export function useLogin() {
           ...loginSession,
           user,
         };
+
+        if (isDirectusCrcRole(user.role)) {
+          const crcSession = {
+            ...sessionWithUser,
+            customer: null,
+            savAgent: null,
+            technician: null,
+          };
+
+          useAuthStore.getState().setSession(crcSession);
+
+          return crcSession;
+        }
+
         const customer = await getCustomerOrNull(user.id, sessionWithUser);
 
         if (customer) {

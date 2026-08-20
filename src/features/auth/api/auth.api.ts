@@ -1,4 +1,4 @@
-import { httpClient } from '@/core/api/http-client';
+import { HttpError, httpClient } from '@/core/api/http-client';
 import { technicianApi } from '@/core/api/technician.api';
 import type { DirectusResource } from '@/features/repairs/model/repair.types';
 import type {
@@ -7,6 +7,7 @@ import type {
   AuthSession,
   AuthTechnician,
   AuthUser,
+  AuthUserRole,
 } from '@/store/auth.store';
 
 type DirectusLoginResponse = {
@@ -33,6 +34,18 @@ type DirectusUserResponse = {
   last_name?: string | null;
 };
 
+type DirectusRoleResponse =
+  | string
+  | {
+      id?: string | null;
+      name?: string | null;
+    }
+  | null;
+
+type DirectusUserRoleResponse = {
+  role?: DirectusRoleResponse;
+};
+
 type DirectusCustomerResponse = {
   id: number;
   first_name?: string | null;
@@ -53,6 +66,40 @@ type DirectusSavAgentResponse = {
   active?: boolean | null;
   workshop_id?: number | DirectusSavAgentWorkshopResponse | null;
 };
+
+function mapDirectusRole(role?: DirectusRoleResponse): AuthUserRole | null {
+  if (typeof role === 'string') {
+    return {
+      id: role,
+      name: null,
+    };
+  }
+
+  if (!role || typeof role.id !== 'string') {
+    return null;
+  }
+
+  return {
+    id: role.id,
+    name: typeof role.name === 'string' ? role.name : null,
+  };
+}
+
+async function getCurrentRoleOrNull(): Promise<AuthUserRole | null> {
+  try {
+    const response = await httpClient.get<DirectusUserRoleResponse>(
+      '/users/me?fields=role.id,role.name'
+    );
+
+    return mapDirectusRole(response.role);
+  } catch (error) {
+    if (error instanceof HttpError && [400, 403, 404].includes(error.status)) {
+      return null;
+    }
+
+    throw error;
+  }
+}
 
 function buildSavAgentEndpoint(directusUserId: string): string {
   const searchParams = new URLSearchParams({
@@ -154,13 +201,17 @@ export const authApi = {
   },
 
   getMe: async (): Promise<AuthUser> => {
-    const response = await httpClient.get<DirectusUserResponse>('/users/me');
+    const [response, role] = await Promise.all([
+      httpClient.get<DirectusUserResponse>('/users/me'),
+      getCurrentRoleOrNull(),
+    ]);
 
     return {
       id: response.id,
       email: response.email,
       firstName: response.first_name ?? null,
       lastName: response.last_name ?? null,
+      role,
     };
   },
 

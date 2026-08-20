@@ -1,13 +1,20 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
+import { isDirectusCrcRole } from '@/core/auth/directus-roles';
 import { localStorageStateStorage } from '@/core/storage/local-storage';
+
+export type AuthUserRole = {
+  id: string | null;
+  name: string | null;
+};
 
 export type AuthUser = {
   id: string;
   email: string;
   firstName?: string | null;
   lastName?: string | null;
+  role?: AuthUserRole | null;
 };
 
 export type AuthCustomer = {
@@ -87,11 +94,15 @@ const emptySession = {
 
 function hasProtectedSession(
   accessToken: string | null,
+  user: AuthUser | null,
   customer: AuthCustomer | null,
   savAgent: AuthSavAgent | null,
   technician: AuthTechnician | null
 ): boolean {
-  return Boolean(accessToken && (customer || savAgent || technician));
+  return Boolean(
+    accessToken &&
+      (customer || savAgent || technician || isDirectusCrcRole(user?.role))
+  );
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -119,6 +130,7 @@ export const useAuthStore = create<AuthState>()(
           technician,
           isAuthenticated: hasProtectedSession(
             accessToken,
+            user,
             customer,
             savAgent,
             technician
@@ -142,7 +154,10 @@ export const useAuthStore = create<AuthState>()(
 
         if (
           !authState.accessToken ||
-          (!authState.customer && !authState.savAgent && !authState.technician)
+          (!authState.customer &&
+            !authState.savAgent &&
+            !authState.technician &&
+            !isDirectusCrcRole(authState.user?.role))
         ) {
           authState.clearSession();
         } else {
