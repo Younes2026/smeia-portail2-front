@@ -43,8 +43,8 @@ export function CrcPortalLayout({ children }: PropsWithChildren) {
           </View>
 
           <View style={[styles.identity, isCompact && styles.identityCompact]}>
-            <View style={styles.readOnlyBadge}>
-              <Text style={styles.readOnlyBadgeText}>LECTURE SEULE</Text>
+            <View style={styles.accessBadge}>
+              <Text style={styles.accessBadgeText}>ACCÈS CRC</Text>
             </View>
             <View style={styles.identityCopy}>
               <Text numberOfLines={1} style={styles.identityName}>
@@ -135,13 +135,13 @@ const styles = StyleSheet.create({
     width: '100%',
     justifyContent: 'space-between',
   },
-  readOnlyBadge: {
+  accessBadge: {
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderRadius: spacing.xs,
     backgroundColor: colors.light.background.muted,
   },
-  readOnlyBadgeText: {
+  accessBadgeText: {
     color: colors.light.text.secondary,
     fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.semiBold,

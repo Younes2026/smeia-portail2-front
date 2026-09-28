@@ -8,6 +8,14 @@ export type CrcStatusTone = 'danger' | 'info' | 'muted' | 'success' | 'warning';
 
 export type CrcAppointmentViewModel = {
   id: number;
+  status: CrcAppointmentStatus;
+  vehicleId: number;
+  serviceTypeId: number;
+  workshopId: number;
+  workshopType: CrcAppointment['workshop']['workshop_type'];
+  showroomId: number;
+  requestedDate: string;
+  requestedTime: string;
   reference: string;
   customerName: string;
   customerInitials: string;
@@ -69,6 +77,7 @@ const STATUS_PRESENTATION: Record<
   confirmed: { label: 'Confirmée', tone: 'success' },
   rejected: { label: 'Refusée', tone: 'danger' },
   cancelled: { label: 'Annulée', tone: 'muted' },
+  arrived: { label: 'Arrivée', tone: 'success' },
 };
 
 function joinNonEmpty(parts: (string | null | undefined)[]): string {
@@ -124,6 +133,14 @@ export function presentCrcAppointment(
 
   return {
     id: appointment.id,
+    status: appointment.status,
+    vehicleId: appointment.vehicle.id,
+    serviceTypeId: appointment.service_type.id,
+    workshopId: appointment.workshop.id,
+    workshopType: appointment.workshop.workshop_type,
+    showroomId: appointment.workshop.showroom.id,
+    requestedDate: appointment.requested_date,
+    requestedTime: appointment.requested_time,
     reference: `Demande #${appointment.id}`,
     customerName,
     customerInitials: getInitials(customerName),

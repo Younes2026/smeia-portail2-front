@@ -10,6 +10,7 @@ const DAYS_IN_GRID = 42;
 const DEFAULT_LOCALE = 'fr-FR';
 
 export type MonthlyCalendarProps = {
+  initialVisibleDate?: Date | null;
   selectedDate?: Date | null;
   minDate?: Date;
   maxDate?: Date;
@@ -149,6 +150,7 @@ function canNavigateToMonth(
 }
 
 export function MonthlyCalendar({
+  initialVisibleDate = null,
   selectedDate = null,
   minDate,
   maxDate,
@@ -164,9 +166,9 @@ export function MonthlyCalendar({
     () => (maxDate ? normalizeDate(maxDate) : undefined),
     [maxDate]
   );
-  const selectedMonth = selectedDate
-    ? getCalendarMonth(selectedDate)
-    : getCalendarMonth(effectiveMinDate);
+  const selectedMonth = getCalendarMonth(
+    selectedDate ?? initialVisibleDate ?? effectiveMinDate
+  );
   const [visibleMonth, setVisibleMonth] = useState(selectedMonth);
   const today = useMemo(() => normalizeDate(new Date()), []);
   const disabledDateKeys = useMemo(
@@ -193,6 +195,12 @@ export function MonthlyCalendar({
       setVisibleMonth(getCalendarMonth(selectedDate));
     }
   }, [selectedDate]);
+
+  useEffect(() => {
+    if (!selectedDate && initialVisibleDate) {
+      setVisibleMonth(getCalendarMonth(initialVisibleDate));
+    }
+  }, [initialVisibleDate, selectedDate]);
 
   const handlePreviousMonth = () => {
     if (!canGoToPreviousMonth) {
@@ -395,7 +403,7 @@ const styles = StyleSheet.create({
   },
 
   dayCell: {
-    width: '13.45%',
+    width: '13%',
     aspectRatio: 1,
     alignItems: 'center',
     justifyContent: 'center',

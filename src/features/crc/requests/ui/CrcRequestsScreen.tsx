@@ -11,7 +11,10 @@ import {
 import { EmptyState } from '@/components/feedback/EmptyState';
 import { ErrorState } from '@/components/feedback/ErrorState';
 import { LoadingState } from '@/components/feedback/LoadingState';
-import type { CrcAppointmentQueue } from '@/core/api/crc-appointments.api';
+import type {
+  CrcAppointmentActionResult,
+  CrcAppointmentQueue,
+} from '@/core/api/crc-appointments.api';
 import { breakpoints } from '@/core/theme/breakpoints';
 import { colors } from '@/core/theme/colors';
 import { spacing } from '@/core/theme/spacing';
@@ -27,6 +30,8 @@ import {
   type CrcAppointmentViewModel,
   type CrcStatusTone,
 } from '@/features/crc/requests/model/crc-appointment.presenter';
+import { CrcAlternativeSlotsDrawer } from '@/features/crc/requests/ui/CrcAlternativeSlotsDrawer';
+import { CrcAppointmentActions } from '@/features/crc/requests/ui/CrcAppointmentActions';
 import { CrcPortalLayout } from '@/features/crc/shared/ui/CrcPortalLayout';
 
 type QueueTabsProps = {
@@ -169,9 +174,11 @@ function DetailLine({ label, value }: { label: string; value: string }) {
 function AppointmentDetail({
   appointment,
   isCompact,
+  onActionSuccess,
 }: {
   appointment: CrcAppointmentViewModel;
   isCompact: boolean;
+  onActionSuccess: (result: CrcAppointmentActionResult) => void;
 }) {
   return (
     <View style={styles.detailContent}>
@@ -223,6 +230,15 @@ function AppointmentDetail({
           <DetailLine label="Localisation" value={appointment.locationLabel} />
         </View>
       </View>
+
+      <CrcAlternativeSlotsDrawer appointment={appointment} />
+
+      <CrcAppointmentActions
+        appointmentId={appointment.id}
+        key={appointment.id}
+        onSuccess={onActionSuccess}
+        status={appointment.status}
+      />
     </View>
   );
 }
@@ -282,6 +298,15 @@ export function CrcRequestsScreen() {
     setQueue(nextQueue);
   };
 
+  const handleActionSuccess = (result: CrcAppointmentActionResult) => {
+    const remainsInCurrentQueue =
+      queue === 'callback' && result.status_to === 'callback_pending';
+
+    setRequestedAppointmentId(
+      remainsInCurrentQueue ? result.appointment_id : null
+    );
+  };
+
   return (
     <CrcPortalLayout>
       <ScrollView
@@ -294,7 +319,7 @@ export function CrcRequestsScreen() {
             <Text style={styles.pageEyebrow}>GESTION DES DEMANDES</Text>
             <Text style={styles.pageTitle}>File des rendez-vous</Text>
             <Text style={styles.pageSubtitle}>
-              Consultation centralisée des demandes clients transmises au CRC.
+              Traitement centralisé des demandes clients transmises au CRC.
             </Text>
           </View>
           <View style={styles.countCard}>
@@ -380,6 +405,7 @@ export function CrcRequestsScreen() {
               <AppointmentDetail
                 appointment={selectedAppointment}
                 isCompact={isCompact}
+                onActionSuccess={handleActionSuccess}
               />
             ) : (
               <RetryEmptyState

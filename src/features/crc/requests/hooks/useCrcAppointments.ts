@@ -9,6 +9,7 @@ import { isDirectusCrcRole } from '@/core/auth/directus-roles';
 import { useAuthStore } from '@/store/auth.store';
 
 export const crcAppointmentsQueryKeys = {
+  all: ['crc', 'appointments'] as const,
   list: (queue: CrcAppointmentQueue) =>
     ['crc', 'appointments', 'list', queue] as const,
   detail: (appointmentId: number | null) =>
